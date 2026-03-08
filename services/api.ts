@@ -1,10 +1,14 @@
 import AsyncStorage from "@react-native-async-storage/async-storage";
+import CookieManager from "@react-native-cookies/cookies";
+import ReactNativeBlobUtil from "react-native-blob-util";
 
 // region: --- Interface Definitions ---
 export interface DoubanItem {
+  id?: string;
   title: string;
   poster: string;
   rate?: string;
+  year?: string;
 }
 
 export interface DoubanResponse {
@@ -13,14 +17,25 @@ export interface DoubanResponse {
   list: DoubanItem[];
 }
 
+export interface DoubanCategoryParams {
+  kind: "movie" | "tv";
+  category: string;
+  type: string;
+  limit?: number;
+  start?: number;
+}
+
 export interface VideoDetail {
   id: string;
   title: string;
   poster: string;
+  episodes: string[];
   source: string;
   source_name: string;
   desc?: string;
   type?: string;
+  type_name?: string;
+  class?: string;
   year?: string;
   area?: string;
   director?: string;
@@ -29,7 +44,7 @@ export interface VideoDetail {
 }
 
 export interface SearchResult {
-  id: number;
+  id: string | number;
   title: string;
   poster: string;
   episodes: string[];
@@ -75,8 +90,122 @@ export interface ServerConfig {
   StorageType: "localstorage" | "redis" | string;
 }
 
+type HeadersWithMap = Headers & {
+  map?: Record<string, string | string[]>;
+};
+
 export class API {
   public baseURL: string = "";
+
+  private normalizeTitle(value: string): string {
+    return value.replace(/\s+/g, "").trim().toLowerCase();
+  }
+
+  private extractCookieHeader(rawCookies: string): string {
+    return rawCookies
+      .split(/,(?=[^;,]+=)/)
+      .map((cookie) => cookie.split(";")[0]?.trim() ?? "")
+      .filter(Boolean)
+      .join("; ");
+  }
+
+  private buildCookieHeaderFromStore(cookies: Record<string, { value?: string }>): string {
+    return Object.entries(cookies)
+      .map(([name, cookie]) => {
+        if (!cookie?.value) {
+          return "";
+        }
+
+        return `${name}=${cookie.value}`;
+      })
+      .filter(Boolean)
+      .join("; ");
+  }
+
+  private getSetCookieHeader(response: Response): string | null {
+    const headerValue = response.headers.get("set-cookie") ?? response.headers.get("Set-Cookie");
+    if (headerValue) {
+      return headerValue;
+    }
+
+    const headerMap = (response.headers as HeadersWithMap).map;
+    const mappedValue = headerMap?.["set-cookie"];
+    if (Array.isArray(mappedValue)) {
+      return mappedValue.join(", ");
+    }
+
+    return mappedValue ?? null;
+  }
+
+  private getSetCookieHeaderFromRawHeaders(rawHeaders: string): string | null {
+    const cookieLines = rawHeaders
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .filter((line) => line.toLowerCase().startsWith("set-cookie:"))
+      .map((line) => line.slice(line.indexOf(":") + 1).trim())
+      .filter(Boolean);
+
+    if (cookieLines.length === 0) {
+      return null;
+    }
+
+    return cookieLines.join(", ");
+  }
+
+  private getSetCookieHeaderFromHeaderObject(headers: Record<string, string | string[] | undefined>): string | null {
+    const mappedHeader = headers["set-cookie"] ?? headers["Set-Cookie"];
+    if (Array.isArray(mappedHeader)) {
+      return mappedHeader.join(", ");
+    }
+
+    return mappedHeader ?? null;
+  }
+
+  private async sendLoginRequest(body: string): Promise<{ status: number; responseText: string; setCookieHeader: string | null }> {
+    const response = await ReactNativeBlobUtil.fetch("POST", `${this.baseURL}/api/login`, {
+      "Content-Type": "application/json",
+      "Cache-Control": "no-store",
+    }, body);
+
+    const responseInfo = response.info();
+    const setCookieHeader = this.getSetCookieHeaderFromHeaderObject(responseInfo.headers)
+      ?? this.getSetCookieHeaderFromRawHeaders(responseInfo.headers?.toString?.() ?? "");
+
+    return {
+      status: responseInfo.status,
+      responseText: await response.text(),
+      setCookieHeader,
+    };
+  }
+
+  private async getNativeCookieHeader(): Promise<string> {
+    try {
+      const nativeCookies = await CookieManager.get(this.baseURL);
+      return this.buildCookieHeaderFromStore(nativeCookies);
+    } catch {
+      return "";
+    }
+  }
+
+  private async syncCookieHeaderToNative(cookieHeader: string): Promise<void> {
+    if (!cookieHeader) {
+      return;
+    }
+
+    try {
+      await CookieManager.setFromResponse(this.baseURL, cookieHeader);
+    } catch {
+      return;
+    }
+  }
+
+  private async clearNativeCookies(): Promise<void> {
+    try {
+      await CookieManager.clearAll();
+    } catch {
+      return;
+    }
+  }
 
   constructor(baseURL?: string) {
     if (baseURL) {
@@ -93,9 +222,35 @@ export class API {
       throw new Error("API_URL_NOT_SET");
     }
 
-    const response = await fetch(`${this.baseURL}${url}`, options);
+    const headers = new Headers(options.headers ?? {});
+    let authCookies = await AsyncStorage.getItem("authCookies");
+    if (!authCookies) {
+      authCookies = await this.getNativeCookieHeader();
+      if (authCookies) {
+        await AsyncStorage.setItem("authCookies", authCookies);
+      }
+    }
+
+    if (authCookies && !headers.has("Cookie")) {
+      await this.syncCookieHeaderToNative(authCookies);
+      headers.set("Cookie", authCookies);
+    }
+
+    const response = await fetch(`${this.baseURL}${url}`, {
+      ...options,
+      headers,
+      credentials: "include",
+    });
+
+    const setCookieHeader = this.getSetCookieHeader(response);
+    if (setCookieHeader) {
+      await this.syncCookieHeaderToNative(setCookieHeader);
+      await AsyncStorage.setItem("authCookies", this.extractCookieHeader(setCookieHeader));
+    }
 
     if (response.status === 401) {
+      await AsyncStorage.setItem("authCookies", "");
+      await this.clearNativeCookies();
       throw new Error("UNAUTHORIZED");
     }
 
@@ -107,19 +262,33 @@ export class API {
   }
 
   async login(username?: string | undefined, password?: string): Promise<{ ok: boolean }> {
-    const response = await this._fetch("/api/login", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ username, password }),
-    });
-
-    // 存储cookie到AsyncStorage
-    const cookies = response.headers.get("Set-Cookie");
-    if (cookies) {
-      await AsyncStorage.setItem("authCookies", cookies);
+    if (!this.baseURL) {
+      throw new Error("API_URL_NOT_SET");
     }
 
-    return response.json();
+    const { status, responseText, setCookieHeader } = await this.sendLoginRequest(JSON.stringify({ username, password }));
+
+    if (status === 401) {
+      await AsyncStorage.setItem("authCookies", "");
+      await this.clearNativeCookies();
+      throw new Error("UNAUTHORIZED");
+    }
+
+    if (status < 200 || status >= 300) {
+      throw new Error(`HTTP error! status: ${status}`);
+    }
+
+    if (setCookieHeader) {
+      await this.syncCookieHeaderToNative(setCookieHeader);
+      await AsyncStorage.setItem("authCookies", this.extractCookieHeader(setCookieHeader));
+    }
+
+    const nativeCookieHeader = await this.getNativeCookieHeader();
+    if (nativeCookieHeader) {
+      await AsyncStorage.setItem("authCookies", nativeCookieHeader);
+    }
+
+    return JSON.parse(responseText) as { ok: boolean };
   }
 
   async logout(): Promise<{ ok: boolean }> {
@@ -127,6 +296,7 @@ export class API {
       method: "POST",
     });
     await AsyncStorage.setItem("authCookies", '');
+    await this.clearNativeCookies();
     return response.json();
   }
 
@@ -211,17 +381,85 @@ export class API {
     return response.json();
   }
 
-  async searchVideos(query: string): Promise<{ results: SearchResult[] }> {
-    const url = `/api/search?q=${encodeURIComponent(query)}`;
+  async getDoubanCategoryData({
+    kind,
+    category,
+    type,
+    limit = 16,
+    start = 0,
+  }: DoubanCategoryParams): Promise<DoubanResponse> {
+    const url = `/api/douban/categories?kind=${kind}&category=${encodeURIComponent(category)}&type=${encodeURIComponent(type)}&limit=${limit}&start=${start}`;
     const response = await this._fetch(url);
     return response.json();
+  }
+
+  async searchVideos(query: string): Promise<{ results: SearchResult[] }> {
+    if (!this.baseURL) {
+      throw new Error("API_URL_NOT_SET");
+    }
+
+    let authCookies = await AsyncStorage.getItem("authCookies");
+    if (!authCookies) {
+      authCookies = await this.getNativeCookieHeader();
+      if (authCookies) {
+        await AsyncStorage.setItem("authCookies", authCookies);
+      }
+    }
+
+    const headers: Record<string, string> = {
+      "Cache-Control": "no-store",
+    };
+
+    if (authCookies) {
+      await this.syncCookieHeaderToNative(authCookies);
+      headers.Cookie = authCookies;
+    }
+
+    const response = await ReactNativeBlobUtil.fetch(
+      "GET",
+      `${this.baseURL}/api/search?q=${encodeURIComponent(query)}`,
+      headers
+    );
+
+    const responseInfo = response.info();
+    const setCookieHeader = this.getSetCookieHeaderFromHeaderObject(responseInfo.headers)
+      ?? this.getSetCookieHeaderFromRawHeaders(responseInfo.headers?.toString?.() ?? "");
+
+    if (setCookieHeader) {
+      await this.syncCookieHeaderToNative(setCookieHeader);
+      await AsyncStorage.setItem("authCookies", this.extractCookieHeader(setCookieHeader));
+    }
+
+    if (responseInfo.status === 401) {
+      await AsyncStorage.setItem("authCookies", "");
+      await this.clearNativeCookies();
+      throw new Error("UNAUTHORIZED");
+    }
+
+    if (responseInfo.status < 200 || responseInfo.status >= 300) {
+      throw new Error(`HTTP error! status: ${responseInfo.status}`);
+    }
+
+    return JSON.parse(await response.text()) as { results: SearchResult[] };
   }
 
   async searchVideo(query: string, resourceId: string, signal?: AbortSignal): Promise<{ results: SearchResult[] }> {
     const url = `/api/search/one?q=${encodeURIComponent(query)}&resourceId=${encodeURIComponent(resourceId)}`;
     const response = await this._fetch(url, { signal });
     const { results } = await response.json();
-    return { results: results.filter((item: any) => item.title === query )};
+    const normalizedQuery = this.normalizeTitle(query);
+    const exactMatches = results.filter((item: SearchResult) => this.normalizeTitle(item.title) === normalizedQuery);
+
+    if (exactMatches.length > 0) {
+      return { results: exactMatches };
+    }
+
+    const partialMatches = results.filter((item: SearchResult) => {
+      const normalizedTitle = this.normalizeTitle(item.title);
+      return normalizedTitle.includes(normalizedQuery) || normalizedQuery.includes(normalizedTitle);
+    });
+
+    return { results: partialMatches.length > 0 ? partialMatches : results };
   }
 
   async getResources(signal?: AbortSignal): Promise<ApiSite[]> {

@@ -7,7 +7,6 @@ export interface StorageConfig {
 
 // Create a singleton instance
 export const storageConfig: StorageConfig = {
-  // Default to undefined (will fallback to local storage)
   storageType: undefined,
 
   getStorageType() {

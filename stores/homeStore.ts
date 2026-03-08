@@ -3,6 +3,9 @@ import { api, SearchResult, PlayRecord } from "@/services/api";
 import { PlayRecordManager } from "@/services/storage";
 import useAuthStore from "./authStore";
 import { useSettingsStore } from "./settingsStore";
+import Logger from "@/utils/Logger";
+
+const logger = Logger.withTag('HomeStore');
 
 export type RowItem = (SearchResult | PlayRecord) & {
   id: string;
@@ -24,11 +27,34 @@ export interface Category {
   type?: "movie" | "tv" | "record";
   tag?: string;
   tags?: string[];
+  doubanCategoryKind?: "movie" | "tv";
+  doubanCategory?: string;
+  doubanCategoryType?: string;
 }
 
 const initialCategories: Category[] = [
   { title: "最近播放", type: "record" },
-  { title: "热门剧集", type: "tv", tag: "热门" },
+  {
+    title: "热门电影",
+    type: "movie",
+    doubanCategoryKind: "movie",
+    doubanCategory: "热门",
+    doubanCategoryType: "全部",
+  },
+  {
+    title: "热门剧集",
+    type: "tv",
+    doubanCategoryKind: "tv",
+    doubanCategory: "tv",
+    doubanCategoryType: "tv",
+  },
+  {
+    title: "热门综艺",
+    type: "tv",
+    doubanCategoryKind: "tv",
+    doubanCategory: "show",
+    doubanCategoryType: "show",
+  },
   { title: "电视剧", type: "tv", tags: ["国产剧", "美剧", "英剧", "韩剧", "日剧", "港剧", "日本动画", "动画"] },
   {
     title: "电影",
@@ -71,6 +97,14 @@ const getCacheKey = (category: Category) => {
   return `${category.type || 'unknown'}-${category.title}-${category.tag || ''}`;
 };
 
+const getCacheType = (category: Category): CacheItem['type'] => {
+  if (category.type === 'record') {
+    return 'record';
+  }
+
+  return category.type === 'tv' ? 'tv' : 'movie';
+};
+
 const isValidCache = (cacheItem: CacheItem) => {
   return Date.now() - cacheItem.timestamp < CACHE_EXPIRE_TIME;
 };
@@ -105,34 +139,37 @@ const useHomeStore = create<HomeState>((set, get) => ({
   error: null,
 
   fetchInitialData: async () => {
-    const { apiBaseUrl } = useSettingsStore.getState();
-    await useAuthStore.getState().checkLoginStatus(apiBaseUrl);
+    try {
+      const { apiBaseUrl } = useSettingsStore.getState();
+      await useAuthStore.getState().checkLoginStatus(apiBaseUrl);
 
-    const { selectedCategory } = get();
-    const cacheKey = getCacheKey(selectedCategory);
+      const { selectedCategory } = get();
+      const cacheKey = getCacheKey(selectedCategory);
 
-    // 最近播放不缓存，始终实时获取
-    if (selectedCategory.type === 'record') {
+      if (selectedCategory.type === 'record') {
+        set({ loading: true, contentData: [], pageStart: 0, hasMore: true, error: null });
+        await get().loadMoreData();
+        return;
+      }
+
+      if (dataCache.has(cacheKey) && isValidCache(dataCache.get(cacheKey)!)) {
+        const cachedData = dataCache.get(cacheKey)!;
+        set({
+          loading: false,
+          contentData: cachedData.data,
+          pageStart: cachedData.data.length,
+          hasMore: cachedData.hasMore,
+          error: null
+        });
+        return;
+      }
+
       set({ loading: true, contentData: [], pageStart: 0, hasMore: true, error: null });
       await get().loadMoreData();
-      return;
+    } catch (error) {
+      logger.warn("Failed to fetch initial home data:", error);
+      set({ loading: false, loadingMore: false, error: "加载失败，请重试" });
     }
-
-    // 检查缓存
-    if (dataCache.has(cacheKey) && isValidCache(dataCache.get(cacheKey)!)) {
-      const cachedData = dataCache.get(cacheKey)!;
-      set({
-        loading: false,
-        contentData: cachedData.data,
-        pageStart: cachedData.data.length,
-        hasMore: cachedData.hasMore,
-        error: null
-      });
-      return;
-    }
-
-    set({ loading: true, contentData: [], pageStart: 0, hasMore: true, error: null });
-    await get().loadMoreData();
   },
 
   loadMoreData: async () => {
@@ -154,11 +191,15 @@ const useHomeStore = create<HomeState>((set, get) => ({
         const rowItems = Object.entries(records)
           .map(([key, record]) => {
             const [source, id] = key.split("+");
+            const safeTotalTime = record.total_time > 0 ? record.total_time : 1;
+            const rawProgress = record.total_time > 0 ? record.play_time / safeTotalTime : 0;
+            const progress = Number.isFinite(rawProgress) ? Math.min(Math.max(rawProgress, 0), 1) : 0;
+
             return {
               ...record,
               id,
               source,
-              progress: record.play_time / record.total_time,
+              progress,
               poster: record.cover,
               sourceName: record.source_name,
               episodeIndex: record.index,
@@ -171,6 +212,70 @@ const useHomeStore = create<HomeState>((set, get) => ({
           .sort((a, b) => (b.lastPlayed || 0) - (a.lastPlayed || 0));
 
         set({ contentData: rowItems, hasMore: false });
+      } else if (
+        selectedCategory.doubanCategoryKind &&
+        selectedCategory.doubanCategory &&
+        selectedCategory.doubanCategoryType
+      ) {
+        const result = await api.getDoubanCategoryData({
+          kind: selectedCategory.doubanCategoryKind,
+          category: selectedCategory.doubanCategory,
+          type: selectedCategory.doubanCategoryType,
+          limit: 20,
+          start: pageStart,
+        });
+
+        const newItems = result.list.map((item) => ({
+          ...item,
+          id: item.id || item.title,
+          source: "douban",
+        })) as RowItem[];
+
+        const cacheKey = getCacheKey(selectedCategory);
+
+        if (pageStart === 0) {
+          for (const [key, value] of dataCache.entries()) {
+            if (!isValidCache(value)) {
+              dataCache.delete(key);
+            }
+          }
+
+          if (dataCache.size >= MAX_CACHE_SIZE) {
+            const oldestKey = Array.from(dataCache.keys())[0];
+            dataCache.delete(oldestKey);
+          }
+
+          const cacheItems = newItems.slice(0, MAX_ITEMS_PER_CACHE);
+
+          dataCache.set(cacheKey, {
+            data: cacheItems,
+            timestamp: Date.now(),
+            type: getCacheType(selectedCategory),
+            hasMore: true,
+          });
+
+          set({
+            contentData: newItems,
+            pageStart: newItems.length,
+            hasMore: result.list.length !== 0,
+          });
+        } else {
+          const existingCache = dataCache.get(cacheKey);
+          if (existingCache && existingCache.data.length < MAX_ITEMS_PER_CACHE) {
+            const updatedData = [...existingCache.data, ...newItems];
+            dataCache.set(cacheKey, {
+              ...existingCache,
+              data: updatedData.slice(0, MAX_ITEMS_PER_CACHE),
+              hasMore: true,
+            });
+          }
+
+          set((state) => ({
+            contentData: [...state.contentData, ...newItems],
+            pageStart: state.pageStart + newItems.length,
+            hasMore: result.list.length !== 0,
+          }));
+        }
       } else if (selectedCategory.type && selectedCategory.tag) {
         const result = await api.getDoubanData(
           selectedCategory.type,
@@ -208,7 +313,7 @@ const useHomeStore = create<HomeState>((set, get) => ({
           dataCache.set(cacheKey, {
             data: cacheItems,
             timestamp: Date.now(),
-            type: selectedCategory.type,
+            type: getCacheType(selectedCategory),
             hasMore: true // 始终为 true，因为我们允许继续加载
           });
 
@@ -287,7 +392,9 @@ const useHomeStore = create<HomeState>((set, get) => ({
       });
 
       if (category.type === 'record') {
-        get().fetchInitialData();
+        void get().fetchInitialData().catch((error) => {
+          logger.warn("Failed to refresh record category:", error);
+        });
         return;
       }
 
@@ -304,19 +411,40 @@ const useHomeStore = create<HomeState>((set, get) => ({
         if (cachedData) {
           dataCache.delete(cacheKey);
         }
-        get().fetchInitialData();
+        void get().fetchInitialData().catch((error) => {
+          logger.warn("Failed to fetch selected category data:", error);
+        });
       }
     }
   },
 
   refreshPlayRecords: async () => {
-    const { apiBaseUrl } = useSettingsStore.getState();
-    await useAuthStore.getState().checkLoginStatus(apiBaseUrl);
-    const { isLoggedIn } = useAuthStore.getState();
-    if (!isLoggedIn) {
+    try {
+      const { apiBaseUrl } = useSettingsStore.getState();
+      await useAuthStore.getState().checkLoginStatus(apiBaseUrl);
+      const { isLoggedIn } = useAuthStore.getState();
+      if (!isLoggedIn) {
+        set((state) => {
+          const recordCategoryExists = state.categories.some((c) => c.type === "record");
+          if (recordCategoryExists) {
+            const newCategories = state.categories.filter((c) => c.type !== "record");
+            if (state.selectedCategory.type === "record") {
+              get().selectCategory(newCategories[0] || null);
+            }
+            return { categories: newCategories };
+          }
+          return {};
+        });
+        return;
+      }
+      const records = await PlayRecordManager.getAll();
+      const hasRecords = Object.keys(records).length > 0;
       set((state) => {
         const recordCategoryExists = state.categories.some((c) => c.type === "record");
-        if (recordCategoryExists) {
+        if (hasRecords && !recordCategoryExists) {
+          return { categories: [initialCategories[0], ...state.categories] };
+        }
+        if (!hasRecords && recordCategoryExists) {
           const newCategories = state.categories.filter((c) => c.type !== "record");
           if (state.selectedCategory.type === "record") {
             get().selectCategory(newCategories[0] || null);
@@ -325,26 +453,15 @@ const useHomeStore = create<HomeState>((set, get) => ({
         }
         return {};
       });
-      return;
-    }
-    const records = await PlayRecordManager.getAll();
-    const hasRecords = Object.keys(records).length > 0;
-    set((state) => {
-      const recordCategoryExists = state.categories.some((c) => c.type === "record");
-      if (hasRecords && !recordCategoryExists) {
-        return { categories: [initialCategories[0], ...state.categories] };
-      }
-      if (!hasRecords && recordCategoryExists) {
-        const newCategories = state.categories.filter((c) => c.type !== "record");
-        if (state.selectedCategory.type === "record") {
-          get().selectCategory(newCategories[0] || null);
-        }
-        return { categories: newCategories };
-      }
-      return {};
-    });
 
-    get().fetchInitialData();
+      await get().fetchInitialData();
+    } catch (error) {
+      if (error instanceof Error && error.message === "UNAUTHORIZED") {
+        return;
+      }
+
+      logger.warn("Failed to refresh play records:", error);
+    }
   },
 
   clearError: () => {

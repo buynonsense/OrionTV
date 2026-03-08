@@ -1,7 +1,9 @@
-import React, { useState, useEffect, useCallback, useRef } from "react";
-import { View, FlatList, StyleSheet, ActivityIndicator, Modal, useTVEventHandler, HWEvent, Text } from "react-native";
+import { useState, useEffect, useCallback, useRef } from "react";
+import { View, FlatList, StyleSheet, ActivityIndicator, Modal, useTVEventHandler, type HWEvent, Text } from "react-native";
+import { useRouter } from "expo-router";
+import { ListVideo } from "lucide-react-native";
 import LivePlayer from "@/components/LivePlayer";
-import { fetchAndParseM3u, getPlayableUrl, Channel } from "@/services/m3u";
+import { fetchAndParseM3u, getPlayableUrl, type Channel } from "@/services/m3u";
 import { ThemedView } from "@/components/ThemedView";
 import { StyledButton } from "@/components/StyledButton";
 import { useSettingsStore } from "@/stores/settingsStore";
@@ -12,6 +14,7 @@ import ResponsiveHeader from "@/components/navigation/ResponsiveHeader";
 import { DeviceUtils } from "@/utils/DeviceUtils";
 
 export default function LiveScreen() {
+  const router = useRouter();
   const { m3uUrl } = useSettingsStore();
   
   // 响应式布局配置
@@ -28,16 +31,28 @@ export default function LiveScreen() {
   const [isLoading, setIsLoading] = useState(false);
   const [isChannelListVisible, setIsChannelListVisible] = useState(false);
   const [channelTitle, setChannelTitle] = useState<string | null>(null);
+  const [loadError, setLoadError] = useState<string | null>(null);
   const titleTimer = useRef<NodeJS.Timeout | null>(null);
 
   const selectedChannelUrl = channels.length > 0 ? getPlayableUrl(channels[currentChannelIndex].url) : null;
+
+  const showChannelTitle = useCallback((title: string) => {
+    setChannelTitle(title);
+    if (titleTimer.current) clearTimeout(titleTimer.current);
+    titleTimer.current = setTimeout(() => setChannelTitle(null), 3000);
+  }, []);
 
   useEffect(() => {
     const loadChannels = async () => {
       if (!m3uUrl) return;
       setIsLoading(true);
-      const parsedChannels = await fetchAndParseM3u(m3uUrl);
+      setLoadError(null);
+
+      const result = await fetchAndParseM3u(m3uUrl);
+      const parsedChannels = result.channels;
+
       setChannels(parsedChannels);
+      setLoadError(result.error);
 
       const groups: Record<string, Channel[]> = parsedChannels.reduce((acc, channel) => {
         const groupName = channel.group || "Other";
@@ -59,13 +74,7 @@ export default function LiveScreen() {
       setIsLoading(false);
     };
     loadChannels();
-  }, [m3uUrl]);
-
-  const showChannelTitle = (title: string) => {
-    setChannelTitle(title);
-    if (titleTimer.current) clearTimeout(titleTimer.current);
-    titleTimer.current = setTimeout(() => setChannelTitle(null), 3000);
-  };
+  }, [m3uUrl, showChannelTitle]);
 
   const handleSelectChannel = (channel: Channel) => {
     const globalIndex = channels.findIndex((c) => c.id === channel.id);
@@ -79,14 +88,14 @@ export default function LiveScreen() {
   const changeChannel = useCallback(
     (direction: "next" | "prev") => {
       if (channels.length === 0) return;
-      let newIndex =
+      const newIndex =
         direction === "next"
           ? (currentChannelIndex + 1) % channels.length
           : (currentChannelIndex - 1 + channels.length) % channels.length;
       setCurrentChannelIndex(newIndex);
       showChannelTitle(channels[newIndex].name);
     },
-    [channels, currentChannelIndex]
+    [channels, currentChannelIndex, showChannelTitle]
   );
 
   const handleTVEvent = useCallback(
@@ -112,6 +121,14 @@ export default function LiveScreen() {
         channelTitle={channelTitle} 
         onPlaybackStatusUpdate={() => {}} 
       />
+      {deviceType !== 'tv' && channels.length > 0 && (
+        <View style={dynamicStyles.channelButtonContainer}>
+          <StyledButton style={dynamicStyles.channelButton} onPress={() => setIsChannelListVisible(true)}>
+            <ListVideo size={20} color="white" />
+            <Text style={dynamicStyles.channelButtonText}>频道</Text>
+          </StyledButton>
+        </View>
+      )}
       <Modal
         animationType="slide"
         transparent={true}
@@ -120,7 +137,12 @@ export default function LiveScreen() {
       >
         <View style={dynamicStyles.modalContainer}>
           <View style={dynamicStyles.modalContent}>
-            <Text style={dynamicStyles.modalTitle}>选择频道</Text>
+            <View style={dynamicStyles.modalHeader}>
+              <Text style={dynamicStyles.modalTitle}>选择频道</Text>
+              {deviceType !== 'tv' && (
+                <StyledButton text="关闭" onPress={() => setIsChannelListVisible(false)} style={dynamicStyles.modalCloseButton} />
+              )}
+            </View>
             <View style={dynamicStyles.listContainer}>
               <View style={dynamicStyles.groupColumn}>
                 <FlatList
@@ -149,7 +171,7 @@ export default function LiveScreen() {
                         text={item.name || "Unknown Channel"}
                         onPress={() => handleSelectChannel(item)}
                         isSelected={channels[currentChannelIndex]?.id === item.id}
-                        hasTVPreferredFocus={channels[currentChannelIndex]?.id === item.id}
+                        hasTVPreferredFocus={deviceType === 'tv' && channels[currentChannelIndex]?.id === item.id}
                         style={dynamicStyles.channelItem}
                         textStyle={dynamicStyles.channelItemText}
                       />
@@ -164,9 +186,37 @@ export default function LiveScreen() {
     </>
   );
 
+  const renderEmptyState = (message: string, actionLabel?: string) => (
+    <View style={dynamicStyles.emptyStateContainer}>
+      <Text style={dynamicStyles.emptyStateTitle}>直播</Text>
+      <Text style={dynamicStyles.emptyStateText}>{message}</Text>
+      {actionLabel ? (
+        <StyledButton style={dynamicStyles.emptyStateButton} onPress={() => router.push("/settings")}>
+          <Text style={dynamicStyles.emptyStateButtonText}>{actionLabel}</Text>
+        </StyledButton>
+      ) : null}
+    </View>
+  );
+
+  const renderContentBody = () => {
+    if (!m3uUrl) {
+      return renderEmptyState("请先在设置中填写直播源地址。", "去设置");
+    }
+
+    if (!isLoading && loadError) {
+      return renderEmptyState(loadError, "去设置");
+    }
+
+    if (!isLoading && channels.length === 0) {
+      return renderEmptyState("当前直播源没有可用频道，请检查地址后重试。", "去设置");
+    }
+
+    return renderLiveContent();
+  };
+
   const content = (
     <ThemedView style={[commonStyles.container, dynamicStyles.container]}>
-      {renderLiveContent()}
+      {renderContentBody()}
     </ThemedView>
   );
 
@@ -206,10 +256,18 @@ const createResponsiveStyles = (deviceType: string, spacing: number) => {
     },
     modalTitle: {
       color: "white",
-      marginBottom: spacing / 2,
       textAlign: "center",
       fontSize: isMobile ? 18 : 16,
       fontWeight: "bold",
+    },
+    modalHeader: {
+      flexDirection: "row",
+      alignItems: "center",
+      justifyContent: "space-between",
+      marginBottom: spacing / 2,
+    },
+    modalCloseButton: {
+      minWidth: 80,
     },
     listContainer: {
       flex: 1,
@@ -241,6 +299,55 @@ const createResponsiveStyles = (deviceType: string, spacing: number) => {
     },
     channelItemText: {
       fontSize: isMobile ? 14 : 12,
+    },
+    channelButtonContainer: {
+      position: "absolute",
+      right: spacing,
+      bottom: spacing * 1.5,
+    },
+    channelButton: {
+      minHeight: minTouchTarget,
+      paddingHorizontal: spacing,
+      flexDirection: "row",
+      justifyContent: "center",
+      alignItems: "center",
+    },
+    channelButtonText: {
+      color: "white",
+      fontSize: isMobile ? 14 : 15,
+      fontWeight: "600",
+      marginLeft: 8,
+    },
+    emptyStateContainer: {
+      flex: 1,
+      justifyContent: "center",
+      alignItems: "center",
+      paddingHorizontal: spacing * 2,
+    },
+    emptyStateTitle: {
+      color: "white",
+      fontSize: isMobile ? 24 : 28,
+      fontWeight: "bold",
+      marginBottom: spacing,
+    },
+    emptyStateText: {
+      color: "#ccc",
+      fontSize: isMobile ? 15 : 17,
+      textAlign: "center",
+      lineHeight: isMobile ? 22 : 26,
+      marginBottom: spacing * 1.5,
+    },
+    emptyStateButton: {
+      minWidth: isMobile ? 160 : 180,
+      minHeight: minTouchTarget,
+      justifyContent: "center",
+      alignItems: "center",
+      paddingHorizontal: spacing * 1.5,
+    },
+    emptyStateButtonText: {
+      color: "white",
+      fontSize: isMobile ? 15 : 16,
+      fontWeight: "600",
     },
   });
 };

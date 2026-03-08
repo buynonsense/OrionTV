@@ -5,6 +5,8 @@ import Logger from '@/utils/Logger';
 
 const logger = Logger.withTag('Storage');
 
+const shouldUseLocalStorage = (): boolean => storageConfig.getStorageType() !== "redis";
+
 // --- Storage Keys ---
 const STORAGE_KEYS = {
   SETTINGS: "mytv_settings",
@@ -105,7 +107,7 @@ export class FavoriteManager {
   }
 
   static async getAll(): Promise<Record<string, Favorite>> {
-    if (this.getStorageType() === "localstorage") {
+    if (shouldUseLocalStorage()) {
       try {
         const data = await AsyncStorage.getItem(STORAGE_KEYS.FAVORITES);
         return data ? JSON.parse(data) : {};
@@ -119,7 +121,7 @@ export class FavoriteManager {
 
   static async save(source: string, id: string, item: Favorite): Promise<void> {
     const key = generateKey(source, id);
-    if (this.getStorageType() === "localstorage") {
+    if (shouldUseLocalStorage()) {
       const allFavorites = await this.getAll();
       allFavorites[key] = { ...item, save_time: Date.now() };
       await AsyncStorage.setItem(STORAGE_KEYS.FAVORITES, JSON.stringify(allFavorites));
@@ -130,7 +132,7 @@ export class FavoriteManager {
 
   static async remove(source: string, id: string): Promise<void> {
     const key = generateKey(source, id);
-    if (this.getStorageType() === "localstorage") {
+    if (shouldUseLocalStorage()) {
       const allFavorites = await this.getAll();
       delete allFavorites[key];
       await AsyncStorage.setItem(STORAGE_KEYS.FAVORITES, JSON.stringify(allFavorites));
@@ -141,7 +143,7 @@ export class FavoriteManager {
 
   static async isFavorited(source: string, id: string): Promise<boolean> {
     const key = generateKey(source, id);
-    if (this.getStorageType() === "localstorage") {
+    if (shouldUseLocalStorage()) {
       const allFavorites = await this.getAll();
       return !!allFavorites[key];
     }
@@ -161,7 +163,7 @@ export class FavoriteManager {
   }
 
   static async clearAll(): Promise<void> {
-    if (this.getStorageType() === "localstorage") {
+    if (shouldUseLocalStorage()) {
       await AsyncStorage.removeItem(STORAGE_KEYS.FAVORITES);
       return;
     }
@@ -181,7 +183,7 @@ export class PlayRecordManager {
     logger.info(`[PERF] PlayRecordManager.getAll START - storageType: ${storageType}`);
     
     let apiRecords: Record<string, PlayRecord> = {};
-    if (storageType === "localstorage") {
+    if (shouldUseLocalStorage()) {
       try {
         const data = await AsyncStorage.getItem(STORAGE_KEYS.PLAY_RECORDS);
         apiRecords = data ? JSON.parse(data) : {};
@@ -221,7 +223,7 @@ export class PlayRecordManager {
     // Player settings are always saved locally
     await PlayerSettingsManager.save(source, id, { introEndTime, outroStartTime });
 
-    if (this.getStorageType() === "localstorage") {
+    if (shouldUseLocalStorage()) {
       const allRecords = await this.getAll();
       const fullRecord = { ...apiRecord, save_time: Date.now() };
       allRecords[key] = { ...allRecords[key], ...fullRecord };
@@ -250,7 +252,7 @@ export class PlayRecordManager {
     const key = generateKey(source, id);
     await PlayerSettingsManager.remove(source, id); // Always remove local settings
 
-    if (this.getStorageType() === "localstorage") {
+    if (shouldUseLocalStorage()) {
       const allRecords = await this.getAll();
       delete allRecords[key];
       await AsyncStorage.setItem(STORAGE_KEYS.PLAY_RECORDS, JSON.stringify(allRecords));

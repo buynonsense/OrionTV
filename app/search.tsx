@@ -1,4 +1,4 @@
-import React, { useState, useRef, useEffect } from "react";
+import React, { useState, useRef, useEffect, useCallback } from "react";
 import { View, TextInput, StyleSheet, Alert, Keyboard, TouchableOpacity } from "react-native";
 import { ThemedView } from "@/components/ThemedView";
 import { ThemedText } from "@/components/ThemedText";
@@ -8,9 +8,11 @@ import { api, SearchResult } from "@/services/api";
 import { Search, QrCode } from "lucide-react-native";
 import { StyledButton } from "@/components/StyledButton";
 import { useRemoteControlStore } from "@/stores/remoteControlStore";
+import useAuthStore from "@/stores/authStore";
 import { RemoteControlModal } from "@/components/RemoteControlModal";
 import { useSettingsStore } from "@/stores/settingsStore";
-import { useRouter } from "expo-router";
+import { LoginCredentialsManager } from "@/services/storage";
+import { useLocalSearchParams, useRouter } from "expo-router";
 import { Colors } from "@/constants/Colors";
 import CustomScrollView from "@/components/CustomScrollView";
 import { useResponsiveLayout } from "@/hooks/useResponsiveLayout";
@@ -23,14 +25,18 @@ import Logger from '@/utils/Logger';
 const logger = Logger.withTag('SearchScreen');
 
 export default function SearchScreen() {
+  const { q: initialQueryParam } = useLocalSearchParams<{ q?: string }>();
   const [keyword, setKeyword] = useState("");
   const [results, setResults] = useState<SearchResult[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const textInputRef = useRef<TextInput>(null);
+  const appliedInitialQueryRef = useRef<string | null>(null);
+  const pendingInitialQueryRef = useRef<string | null>(null);
   const [isInputFocused, setIsInputFocused] = useState(false);
   const { showModal: showRemoteModal, lastMessage, targetPage, clearMessage } = useRemoteControlStore();
-  const { remoteInputEnabled } = useSettingsStore();
+  const { isLoggedIn, checkLoginStatus } = useAuthStore();
+  const { remoteInputEnabled, apiBaseUrl } = useSettingsStore();
   const router = useRouter();
 
   // 响应式布局配置
@@ -38,50 +44,153 @@ export default function SearchScreen() {
   const commonStyles = getCommonResponsiveStyles(responsiveConfig);
   const { deviceType, spacing } = responsiveConfig;
 
-  useEffect(() => {
-    if (lastMessage && targetPage === 'search') {
-      logger.debug("Received remote input:", lastMessage);
-      const realMessage = lastMessage.split("_")[0];
-      setKeyword(realMessage);
-      handleSearch(realMessage);
-      clearMessage(); // Clear the message after processing
+  const searchWithFallback = useCallback(async (term: string): Promise<SearchResult[]> => {
+    let fallbackError: unknown = null;
+
+    try {
+      const response = await api.searchVideos(term);
+      if (response.results.length > 0) {
+        return response.results;
+      }
+    } catch (error) {
+      fallbackError = error;
+      logger.info("Primary search failed, trying resource fallback:", error);
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [lastMessage, targetPage]);
 
-  // useEffect(() => {
-  //   // Focus the text input when the screen loads
-  //   const timer = setTimeout(() => {
-  //     textInputRef.current?.focus();
-  //   }, 200);
-  //   return () => clearTimeout(timer);
-  // }, []);
+    try {
+      const resources = await api.getResources();
+      const fallbackResults = await Promise.all(
+        resources.map(async (resource) => {
+          try {
+            const response = await api.searchVideo(term, resource.key);
+            return response.results;
+          } catch {
+            return [];
+          }
+        })
+      );
 
-  const handleSearch = async (searchText?: string) => {
+      const dedupedResults = new Map<string, SearchResult>();
+      fallbackResults.flat().forEach((item) => {
+        dedupedResults.set(`${item.source}-${item.id}`, item);
+      });
+
+      return Array.from(dedupedResults.values());
+    } catch (error) {
+      logger.info("Fallback search failed:", error);
+      throw fallbackError ?? error;
+    }
+  }, []);
+
+  const handleSearch = useCallback(async (searchText?: string, allowRetry: boolean = true): Promise<boolean> => {
     const term = typeof searchText === "string" ? searchText : keyword;
     if (!term.trim()) {
       Keyboard.dismiss();
-      return;
+      return false;
     }
     Keyboard.dismiss();
     setLoading(true);
     setError(null);
     try {
-      const response = await api.searchVideos(term);
-      if (response.results.length > 0) {
-        setResults(response.results);
+      const nextResults = await searchWithFallback(term);
+      if (nextResults.length > 0) {
+        setResults(nextResults);
+        return true;
       } else {
+        setResults([]);
         setError("没有找到相关内容");
       }
     } catch (err) {
-      setError("搜索失败，请稍后重试。");
+      if (allowRetry && err instanceof Error && err.message === "UNAUTHORIZED" && apiBaseUrl) {
+        const savedCredentials = await LoginCredentialsManager.get();
+        if (savedCredentials?.password) {
+          try {
+            await api.login(savedCredentials.username, savedCredentials.password);
+            return await handleSearch(term, false);
+          } catch (loginError) {
+            logger.info("Search retry login failed:", loginError);
+          }
+        }
+
+        await checkLoginStatus(apiBaseUrl);
+
+        if (useAuthStore.getState().isLoggedIn) {
+          return await handleSearch(term, false);
+        }
+      }
+
+      setResults([]);
+      const errorMessage = err instanceof Error ? err.message : "未知错误";
+      setError(__DEV__ ? `搜索失败：${errorMessage}` : "搜索失败，请稍后重试。");
       logger.info("Search failed:", err);
     } finally {
       setLoading(false);
     }
-  };
+    return false;
+  }, [apiBaseUrl, checkLoginStatus, keyword, searchWithFallback]);
 
-  const onSearchPress = () => handleSearch();
+  useEffect(() => {
+    if (!apiBaseUrl) {
+      return;
+    }
+
+    void checkLoginStatus(apiBaseUrl).catch((error) => {
+      logger.warn("Failed to check login status on search screen:", error);
+    });
+  }, [apiBaseUrl, checkLoginStatus]);
+
+  useEffect(() => {
+    const initialQuery = typeof initialQueryParam === "string" ? initialQueryParam.trim() : "";
+    if (
+      !apiBaseUrl ||
+      !isLoggedIn ||
+      !initialQuery ||
+      appliedInitialQueryRef.current === initialQuery ||
+      pendingInitialQueryRef.current === initialQuery
+    ) {
+      return;
+    }
+
+    pendingInitialQueryRef.current = initialQuery;
+    setKeyword(initialQuery);
+
+    const runInitialSearch = async () => {
+      for (let attempt = 0; attempt < 3; attempt += 1) {
+        const foundResults = await handleSearch(initialQuery);
+        if (foundResults) {
+          appliedInitialQueryRef.current = initialQuery;
+          pendingInitialQueryRef.current = null;
+          return;
+        }
+
+        await new Promise((resolve) => setTimeout(resolve, 1000));
+      }
+
+      pendingInitialQueryRef.current = null;
+    };
+
+    void runInitialSearch().catch((error) => {
+      logger.warn("Initial deep-link search failed unexpectedly:", error);
+    });
+  }, [apiBaseUrl, handleSearch, initialQueryParam, isLoggedIn]);
+
+  useEffect(() => {
+    if (lastMessage && targetPage === 'search') {
+      logger.debug("Received remote input:", lastMessage);
+      const realMessage = lastMessage.split("_")[0];
+      setKeyword(realMessage);
+      void handleSearch(realMessage).catch((error) => {
+        logger.warn("Remote input search failed unexpectedly:", error);
+      });
+      clearMessage();
+    }
+  }, [lastMessage, targetPage, handleSearch, clearMessage]);
+
+  const onSearchPress = useCallback(() => {
+    void handleSearch().catch((error) => {
+      logger.warn("Manual search failed unexpectedly:", error);
+    });
+  }, [handleSearch]);
 
   const handleQrPress = () => {
     if (!remoteInputEnabled) {
@@ -138,7 +247,7 @@ export default function SearchScreen() {
         <StyledButton style={dynamicStyles.searchButton} onPress={onSearchPress}>
           <Search size={deviceType === 'mobile' ? 20 : 24} color="white" />
         </StyledButton>
-        {deviceType !== 'mobile' && (
+        {deviceType === 'tv' && (
           <StyledButton style={dynamicStyles.qrButton} onPress={handleQrPress}>
             <QrCode size={deviceType === 'tv' ? 24 : 20} color="white" />
           </StyledButton>

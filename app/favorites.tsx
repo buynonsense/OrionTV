@@ -1,7 +1,9 @@
-import React, { useEffect } from "react";
+import React, { useCallback, useEffect } from "react";
 import { View, StyleSheet } from "react-native";
+import { useFocusEffect } from "expo-router";
 import { ThemedView } from "@/components/ThemedView";
 import { ThemedText } from "@/components/ThemedText";
+import useAuthStore from "@/stores/authStore";
 import useFavoritesStore from "@/stores/favoritesStore";
 import { Favorite } from "@/services/storage";
 import VideoCard from "@/components/VideoCard";
@@ -11,18 +13,63 @@ import { useResponsiveLayout } from "@/hooks/useResponsiveLayout";
 import { getCommonResponsiveStyles } from "@/utils/ResponsiveStyles";
 import ResponsiveNavigation from "@/components/navigation/ResponsiveNavigation";
 import ResponsiveHeader from "@/components/navigation/ResponsiveHeader";
+import { useSettingsStore } from "@/stores/settingsStore";
+import Logger from "@/utils/Logger";
+
+const logger = Logger.withTag('FavoritesScreen');
 
 export default function FavoritesScreen() {
   const { favorites, loading, error, fetchFavorites } = useFavoritesStore();
+  const { isLoggedIn, checkLoginStatus } = useAuthStore();
+  const { apiBaseUrl } = useSettingsStore();
 
   // 响应式布局配置
   const responsiveConfig = useResponsiveLayout();
   const commonStyles = getCommonResponsiveStyles(responsiveConfig);
   const { deviceType, spacing } = responsiveConfig;
 
+  useFocusEffect(
+    useCallback(() => {
+      if (!apiBaseUrl) {
+        return;
+      }
+
+      let isActive = true;
+
+      const refreshFavoritesOnFocus = async () => {
+        await checkLoginStatus(apiBaseUrl);
+        if (!isActive) {
+          return;
+        }
+
+        if (useAuthStore.getState().isLoggedIn) {
+          await fetchFavorites();
+        }
+      };
+
+      void refreshFavoritesOnFocus().catch((focusError) => {
+        logger.warn("Failed to refresh favorites on focus:", focusError);
+      });
+
+      return () => {
+        isActive = false;
+      };
+    }, [apiBaseUrl, checkLoginStatus, fetchFavorites])
+  );
+
   useEffect(() => {
-    fetchFavorites();
-  }, [fetchFavorites]);
+    if (!apiBaseUrl) {
+      return;
+    }
+
+    if (isLoggedIn) {
+      void fetchFavorites().catch((favoritesError) => {
+        logger.warn("Failed to fetch favorites after login check:", favoritesError);
+      });
+      return;
+    }
+
+  }, [apiBaseUrl, fetchFavorites, isLoggedIn]);
 
   const renderItem = ({ item }: { item: Favorite & { key: string }; index: number }) => {
     const [source, id] = item.key.split("+");

@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect } from "react";
-import { Modal, View, TextInput, StyleSheet, ActivityIndicator, Alert, Keyboard, InteractionManager } from "react-native";
+import { Modal, View, TextInput, StyleSheet, ActivityIndicator, Alert, Keyboard, InteractionManager, Platform } from "react-native";
 import { usePathname } from "expo-router";
 import Toast from "react-native-toast-message";
 import useAuthStore from "@/stores/authStore";
@@ -10,6 +10,9 @@ import { LoginCredentialsManager } from "@/services/storage";
 import { ThemedView } from "./ThemedView";
 import { ThemedText } from "./ThemedText";
 import { StyledButton } from "./StyledButton";
+import Logger from "@/utils/Logger";
+
+const logger = Logger.withTag('LoginModal');
 
 const LoginModal = () => {
   const { isLoginModalVisible, hideLoginModal, checkLoginStatus } = useAuthStore();
@@ -38,7 +41,9 @@ const LoginModal = () => {
           setPassword(savedCredentials.password);
         }
       };
-      loadCredentials();
+      void loadCredentials().catch((error) => {
+        logger.warn("Failed to load saved credentials:", error);
+      });
 
       // 延迟设置 Modal 就绪状态
       const readyTimeout = setTimeout(() => {
@@ -54,7 +59,7 @@ const LoginModal = () => {
 
   // Focus management with better TV remote handling
   useEffect(() => {
-    if (isModalReady && isLoginModalVisible && !isSettingsPage) {
+    if (Platform.isTV && isModalReady && isLoginModalVisible && !isSettingsPage) {
       const isUsernameVisible = serverConfig?.StorageType !== "localstorage";
 
       // Use a small delay to ensure the modal is fully rendered
@@ -154,6 +159,8 @@ const LoginModal = () => {
               style={styles.input}
               placeholder="请输入用户名"
               placeholderTextColor="#888"
+              autoComplete="off"
+              textContentType="none"
               value={username}
               onChangeText={setUsername}
               returnKeyType="next"
@@ -166,6 +173,8 @@ const LoginModal = () => {
             style={styles.input}
             placeholder="请输入密码"
             placeholderTextColor="#888"
+            autoComplete="off"
+            textContentType="none"
             secureTextEntry
             value={password}
             onChangeText={setPassword}

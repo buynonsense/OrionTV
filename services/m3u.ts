@@ -10,6 +10,11 @@ export interface Channel {
   group: string;
 }
 
+export interface M3uFetchResult {
+  channels: Channel[];
+  error: string | null;
+}
+
 export const parseM3U = (m3uText: string): Channel[] => {
   const parsedChannels: Channel[] = [];
   const lines = m3uText.split('\n');
@@ -24,11 +29,11 @@ export const parseM3U = (m3uText: string): Channel[] => {
         currentChannelInfo.name = trimmedLine.substring(commaIndex + 1).trim();
         const attributesPart = trimmedLine.substring(8, commaIndex);
         const logoMatch = attributesPart.match(/tvg-logo="([^"]*)"/i);
-        if (logoMatch && logoMatch[1]) {
+        if (logoMatch?.[1]) {
           currentChannelInfo.logo = logoMatch[1];
         }
         const groupMatch = attributesPart.match(/group-title="([^"]*)"/i);
-        if (groupMatch && groupMatch[1]) {
+        if (groupMatch?.[1]) {
           currentChannelInfo.group = groupMatch[1];
         }
       } else {
@@ -54,17 +59,39 @@ export const parseM3U = (m3uText: string): Channel[] => {
   return parsedChannels;
 };
 
-export const fetchAndParseM3u = async (m3uUrl: string): Promise<Channel[]> => {
+export const fetchAndParseM3u = async (m3uUrl: string): Promise<M3uFetchResult> => {
   try {
     const response = await fetch(m3uUrl);
     if (!response.ok) {
-      throw new Error(`Failed to fetch M3U: ${response.statusText}`);
+      throw new Error(`直播源请求失败 (${response.status})`);
     }
+
     const m3uText = await response.text();
-    return parseM3U(m3uText);
+
+    if (!m3uText.includes('#EXTM3U')) {
+      throw new Error('直播源返回的不是有效的 M3U 内容');
+    }
+
+    const channels = parseM3U(m3uText);
+
+    if (channels.length === 0) {
+      return {
+        channels: [],
+        error: null,
+      };
+    }
+
+    return {
+      channels,
+      error: null,
+    };
   } catch (error) {
     logger.info("Error fetching or parsing M3U:", error);
-    return []; // Return empty array on error
+
+    return {
+      channels: [],
+      error: error instanceof Error ? error.message : '直播源加载失败，请检查地址是否可访问',
+    };
   }
 };
 

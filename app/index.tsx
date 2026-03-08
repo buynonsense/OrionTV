@@ -1,4 +1,4 @@
-import React, { useEffect, useCallback, useRef, useState } from "react";
+import { useEffect, useCallback, useRef, useState } from "react";
 import { View, StyleSheet, ActivityIndicator, FlatList, Pressable, Animated, StatusBar, Platform, BackHandler, ToastAndroid } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { ThemedView } from "@/components/ThemedView";
@@ -8,7 +8,7 @@ import VideoCard from "@/components/VideoCard";
 import { useFocusEffect, useRouter } from "expo-router";
 import { Search, Settings, LogOut, Heart } from "lucide-react-native";
 import { StyledButton } from "@/components/StyledButton";
-import useHomeStore, { RowItem, Category } from "@/stores/homeStore";
+import useHomeStore, { type RowItem, type Category } from "@/stores/homeStore";
 import useAuthStore from "@/stores/authStore";
 import CustomScrollView from "@/components/CustomScrollView";
 import { useResponsiveLayout } from "@/hooks/useResponsiveLayout";
@@ -16,8 +16,10 @@ import { getCommonResponsiveStyles } from "@/utils/ResponsiveStyles";
 import ResponsiveNavigation from "@/components/navigation/ResponsiveNavigation";
 import { useApiConfig, getApiConfigErrorMessage } from "@/hooks/useApiConfig";
 import { Colors } from "@/constants/Colors";
+import Logger from "@/utils/Logger";
 
 const LOAD_MORE_THRESHOLD = 200;
+const logger = Logger.withTag('HomeScreen');
 
 export default function HomeScreen() {
   const router = useRouter();
@@ -49,7 +51,9 @@ export default function HomeScreen() {
 
   useFocusEffect(
     useCallback(() => {
-      refreshPlayRecords();
+      void refreshPlayRecords().catch((error) => {
+        logger.warn("Failed to refresh play records on focus:", error);
+      });
     }, [refreshPlayRecords])
   );
 
@@ -102,11 +106,15 @@ export default function HomeScreen() {
     if (apiConfigStatus.isConfigured && !apiConfigStatus.needsConfiguration) {
       // 对于有标签的分类，需要确保有标签才获取数据
       if (selectedCategory.tags && selectedCategory.tag) {
-        fetchInitialData();
+        void fetchInitialData().catch((error) => {
+          logger.warn("Failed to fetch tagged home data:", error);
+        });
       }
       // 对于无标签的分类，直接获取数据
       else if (!selectedCategory.tags) {
-        fetchInitialData();
+        void fetchInitialData().catch((error) => {
+          logger.warn("Failed to fetch home data:", error);
+        });
       }
     }
   }, [
@@ -186,6 +194,18 @@ export default function HomeScreen() {
     return <ActivityIndicator style={{ marginVertical: 20 }} size="large" />;
   };
 
+  const getHomeEmptyMessage = () => {
+    if (error) {
+      return error;
+    }
+
+    if (selectedCategory?.tags) {
+      return "请选择一个子分类";
+    }
+
+    return "该分类下暂无内容";
+  };
+
   // 检查是否需要显示API配置提示
   const shouldShowApiConfig = apiConfigStatus.needsConfiguration && selectedCategory && !selectedCategory.tags;
 
@@ -200,7 +220,7 @@ export default function HomeScreen() {
       <View style={dynamicStyles.headerContainer}>
         <View style={{ flexDirection: "row", alignItems: "center" }}>
           <ThemedText style={dynamicStyles.headerTitle}>首页</ThemedText>
-          <Pressable android_ripple={Platform.isTV || deviceType !== 'tv'? { color: 'transparent' } : { color: Colors.dark.link }} style={{ marginLeft: 20 }} onPress={() => router.push("/live")}>
+          <Pressable android_ripple={Platform.isTV || deviceType === 'tv' ? { color: 'transparent' } : { color: Colors.dark.link }} style={{ marginLeft: 20 }} onPress={() => router.push("/live")}>
             {({ focused }) => (
               <ThemedText style={[dynamicStyles.headerTitle, { color: focused ? "white" : "grey" }]}>直播</ThemedText>
             )}
@@ -298,7 +318,7 @@ export default function HomeScreen() {
       </View>
 
       {/* 子分类标签 */}
-      {selectedCategory && selectedCategory.tags && (
+      {selectedCategory?.tags && (
         <View style={dynamicStyles.categoryContainer}>
           <FlatList
             data={selectedCategory.tags}
@@ -348,23 +368,16 @@ export default function HomeScreen() {
         <View style={commonStyles.center}>
           <ActivityIndicator size="large" />
         </View>
-      ) : error ? (
-        <View style={commonStyles.center}>
-          <ThemedText type="subtitle" style={{ padding: spacing }}>
-            {error}
-          </ThemedText>
-        </View>
       ) : (
-        <Animated.View style={[dynamicStyles.contentContainer, { opacity: fadeAnim }]}>
+        <Animated.View style={[dynamicStyles.contentContainer, { opacity: fadeAnim }]}> 
           <CustomScrollView
             data={contentData}
             renderItem={renderContentItem}
             loading={loading}
             loadingMore={loadingMore}
-            error={error}
             onEndReached={loadMoreData}
             loadMoreThreshold={LOAD_MORE_THRESHOLD}
-            emptyMessage={selectedCategory?.tags ? "请选择一个子分类" : "该分类下暂无内容"}
+            emptyMessage={getHomeEmptyMessage()}
             ListFooterComponent={renderFooter}
           />
         </Animated.View>

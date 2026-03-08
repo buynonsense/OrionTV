@@ -3,6 +3,8 @@ import { View, StyleSheet, Text, ActivityIndicator } from "react-native";
 import { Video, ResizeMode, AVPlaybackStatus } from "expo-av";
 import { useKeepAwake } from "expo-keep-awake";
 
+import { useResponsiveLayout } from "@/hooks/useResponsiveLayout";
+
 interface LivePlayerProps {
   streamUrl: string | null;
   channelTitle?: string | null;
@@ -16,6 +18,7 @@ export default function LivePlayer({ streamUrl, channelTitle, onPlaybackStatusUp
   const [isLoading, setIsLoading] = useState(false);
   const [isTimeout, setIsTimeout] = useState(false);
   const timeoutRef = useRef<NodeJS.Timeout | null>(null);
+  const { deviceType } = useResponsiveLayout();
   useKeepAwake();
 
   useEffect(() => {
@@ -68,7 +71,7 @@ export default function LivePlayer({ streamUrl, channelTitle, onPlaybackStatusUp
   if (!streamUrl) {
     return (
       <View style={styles.container}>
-        <Text style={styles.messageText}>按向下键选择频道</Text>
+        <Text style={styles.messageText}>{deviceType === "tv" ? "按向下键选择频道" : "请选择频道开始播放"}</Text>
       </View>
     );
   }

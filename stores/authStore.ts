@@ -1,11 +1,44 @@
 import { create } from "zustand";
 import AsyncStorage from "@react-native-async-storage/async-storage";
+import CookieManager from "@react-native-cookies/cookies";
 import { api } from "@/services/api";
+import { LoginCredentialsManager } from "@/services/storage";
 import { useSettingsStore } from "./settingsStore";
 import Toast from "react-native-toast-message";
 import Logger from "@/utils/Logger";
 
 const logger = Logger.withTag('AuthStore');
+
+const buildCookieHeaderFromStore = (cookies: Record<string, { value?: string }>): string =>
+  Object.entries(cookies)
+    .map(([name, cookie]) => {
+      if (!cookie?.value) {
+        return "";
+      }
+
+      return `${name}=${cookie.value}`;
+    })
+    .filter(Boolean)
+    .join('; ');
+
+const getNativeCookieHeader = async (apiBaseUrl: string): Promise<string> => {
+  try {
+    const nativeCookies = await CookieManager.get(apiBaseUrl);
+    return buildCookieHeaderFromStore(nativeCookies);
+  } catch {
+    return '';
+  }
+};
+
+const trySavedCredentialsLogin = async (): Promise<boolean> => {
+  const savedCredentials = await LoginCredentialsManager.get();
+  if (!savedCredentials?.password) {
+    return false;
+  }
+
+  const loginResult = await api.login(savedCredentials.username, savedCredentials.password);
+  return !!loginResult?.ok;
+};
 
 interface AuthState {
   isLoggedIn: boolean;
@@ -57,20 +90,56 @@ const useAuthStore = create<AuthState>((set) => ({
         return;
       }
 
-      const authToken = await AsyncStorage.getItem('authCookies');
+      let authToken = await AsyncStorage.getItem('authCookies');
+      if (!authToken) {
+        authToken = await getNativeCookieHeader(apiBaseUrl);
+
+        if (authToken) {
+          await AsyncStorage.setItem('authCookies', authToken);
+        }
+      }
+
       if (!authToken) {
         if (serverConfig && serverConfig.StorageType === "localstorage") {
           const loginResult = await api.login().catch(() => {
             set({ isLoggedIn: false, isLoginModalVisible: true });
           });
           if (loginResult && loginResult.ok) {
-            set({ isLoggedIn: true });
+            set({ isLoggedIn: true, isLoginModalVisible: false });
           }
         } else {
-          set({ isLoggedIn: false, isLoginModalVisible: true });
+          const autoLoginSucceeded = await trySavedCredentialsLogin().catch((autoLoginError) => {
+            logger.warn("Auto login with saved credentials failed:", autoLoginError);
+            return false;
+          });
+
+          if (autoLoginSucceeded) {
+            set({ isLoggedIn: true, isLoginModalVisible: false });
+          } else {
+            set({ isLoggedIn: false, isLoginModalVisible: true });
+          }
         }
       } else {
-        set({ isLoggedIn: true, isLoginModalVisible: false });
+        try {
+          await api.getSearchHistory();
+          set({ isLoggedIn: true, isLoginModalVisible: false });
+        } catch (validationError) {
+          if (validationError instanceof Error && validationError.message === "UNAUTHORIZED") {
+            await AsyncStorage.setItem('authCookies', '');
+            const autoLoginSucceeded = await trySavedCredentialsLogin().catch((autoLoginError) => {
+              logger.warn("Auto re-login with saved credentials failed:", autoLoginError);
+              return false;
+            });
+
+            if (autoLoginSucceeded) {
+              set({ isLoggedIn: true, isLoginModalVisible: false });
+            } else {
+              set({ isLoggedIn: false, isLoginModalVisible: true });
+            }
+          } else {
+            logger.error("Failed to validate login session:", validationError);
+          }
+        }
       }
     } catch (error) {
       logger.error("Failed to check login status:", error);
