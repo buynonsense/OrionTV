@@ -1,16 +1,15 @@
 import { Platform, Dimensions } from "react-native";
-import { DeviceType } from "@/hooks/useResponsiveLayout";
+import type { DeviceType } from "@/hooks/useResponsiveLayout";
 
 export const DeviceUtils = {
   /**
    * 检测当前设备类型
    */
   getDeviceType(): DeviceType {
-    // if (Platform.isTV) return "tv";
+    if (Platform.isTV) return "tv";
 
     const { width } = Dimensions.get("window");
 
-    if (width >= 1024) return "tv";
     if (width >= 768) return "tablet";
     return "mobile";
   },

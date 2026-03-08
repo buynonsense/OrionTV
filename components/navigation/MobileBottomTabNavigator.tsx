@@ -1,6 +1,7 @@
 import React from 'react';
 import { View, StyleSheet, TouchableOpacity, Text, Platform } from 'react-native';
 import { useRouter, usePathname } from 'expo-router';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Home, Search, Heart, Settings, Tv } from 'lucide-react-native';
 import { Colors } from '@/constants/Colors';
 import { useResponsiveLayout } from '@/hooks/useResponsiveLayout';
@@ -24,12 +25,8 @@ const tabs: TabItem[] = [
 const MobileBottomTabNavigator: React.FC = () => {
   const router = useRouter();
   const pathname = usePathname();
-  const { spacing, deviceType } = useResponsiveLayout();
-  
-  // 在手机端过滤掉直播 tab
-  const filteredTabs = tabs.filter(tab => 
-    deviceType !== 'mobile' || tab.key !== 'live'
-  );
+  const { spacing } = useResponsiveLayout();
+  const insets = useSafeAreaInsets();
   
   const handleTabPress = (route: string) => {
     if (route === '/') {
@@ -45,11 +42,11 @@ const MobileBottomTabNavigator: React.FC = () => {
     return false;
   };
 
-  const dynamicStyles = createStyles(spacing);
+  const dynamicStyles = createStyles(spacing, insets.bottom);
 
   return (
     <View style={dynamicStyles.container}>
-      {filteredTabs.map((tab) => {
+      {tabs.map((tab) => {
         const isActive = isTabActive(tab.route);
         const IconComponent = tab.icon;
         
@@ -78,8 +75,9 @@ const MobileBottomTabNavigator: React.FC = () => {
   );
 };
 
-const createStyles = (spacing: number) => {
+const createStyles = (spacing: number, bottomInset: number) => {
   const minTouchTarget = DeviceUtils.getMinTouchTargetSize();
+  const bottomPadding = Math.max(bottomInset, Platform.OS === 'ios' ? spacing : spacing / 2);
   
   return StyleSheet.create({
     container: {
@@ -88,7 +86,7 @@ const createStyles = (spacing: number) => {
       borderTopWidth: 1,
       borderTopColor: '#333',
       paddingTop: spacing / 2,
-      paddingBottom: Platform.OS === 'ios' ? spacing * 2 : spacing,
+      paddingBottom: spacing / 2 + bottomPadding,
       paddingHorizontal: spacing,
       shadowColor: '#000',
       shadowOffset: {

@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from "react";
+import React, { useState, useEffect, useRef, useCallback } from "react";
 import { View, StyleSheet, Alert, Platform } from "react-native";
 import { useTVEventHandler } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
@@ -58,26 +58,26 @@ export default function SettingsScreen() {
     loadSettings();
   }, [loadSettings]);
 
+  const markAsChanged = useCallback(() => {
+    setHasChanges(true);
+  }, []);
+
+  const handleRemoteInput = useCallback((message: string) => {
+    if (currentSection === "api" && apiSectionRef.current) {
+      setApiBaseUrl(message);
+    } else if (currentSection === "livestream" && liveStreamSectionRef.current) {
+      setM3uUrl(message);
+    }
+  }, [currentSection, setApiBaseUrl, setM3uUrl]);
+
   useEffect(() => {
     if (lastMessage && !targetPage) {
       const realMessage = lastMessage.split("_")[0];
       handleRemoteInput(realMessage);
-      clearMessage(); // Clear the message after processing
+      clearMessage();
       markAsChanged();
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [lastMessage, targetPage]);
-
-  const handleRemoteInput = (message: string) => {
-    // Handle remote input based on currently focused section
-    if (currentSection === "api" && apiSectionRef.current) {
-      // API Config Section
-      setApiBaseUrl(message);
-    } else if (currentSection === "livestream" && liveStreamSectionRef.current) {
-      // Live Stream Section
-      setM3uUrl(message);
-    }
-  };
+  }, [lastMessage, targetPage, handleRemoteInput, clearMessage, markAsChanged]);
 
   const handleSave = async () => {
     setIsLoading(true);
@@ -93,10 +93,6 @@ export default function SettingsScreen() {
     } finally {
       setIsLoading(false);
     }
-  };
-
-  const markAsChanged = () => {
-    setHasChanges(true);
   };
 
   // const sections = [
@@ -159,7 +155,7 @@ export default function SettingsScreen() {
   //   },
   // ].filter(Boolean);
   const rawSections = [
-    deviceType !== "mobile" && {
+    deviceType === "tv" && {
       component: (
         <RemoteInputSection
           onChanged={markAsChanged}
@@ -185,7 +181,7 @@ export default function SettingsScreen() {
       ),
       key: "api",
     },
-    deviceType !== "mobile" && {
+    {
       component: (
         <LiveStreamSection
           ref={liveStreamSectionRef}

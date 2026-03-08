@@ -16,14 +16,12 @@ export interface ResponsiveConfig {
 
 const BREAKPOINTS = {
   mobile: { min: 0, max: 767 },
-  tablet: { min: 768, max: 1023 },
-  tv: { min: 1024, max: Infinity },
+  tablet: { min: 768, max: Infinity },
 };
 
 const getDeviceType = (width: number): DeviceType => {
   if (Platform.isTV) return "tv";
 
-  if (width >= BREAKPOINTS.tv.min) return "tv";
   if (width >= BREAKPOINTS.tablet.min) return "tablet";
   return "mobile";
 };
@@ -54,7 +52,6 @@ const getLayoutConfig = (
       cardHeight = cardWidth * 1.4; // slightly less tall ratio
       break;
 
-    case "tv":
     default:
       columns = 5;
       cardWidth = 160; // Fixed width for TV

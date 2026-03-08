@@ -1,6 +1,7 @@
 import React from 'react';
 import { View, StyleSheet, TouchableOpacity } from 'react-native';
 import { useRouter, usePathname } from 'expo-router';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Home, Heart, Search, Settings, Tv } from 'lucide-react-native';
 import { ThemedText } from '@/components/ThemedText';
 import { useResponsiveLayout } from '@/hooks/useResponsiveLayout';
@@ -56,16 +57,12 @@ export const MobileBottomNavigation: React.FC<MobileBottomNavigationProps> = ({
   const router = useRouter();
   const pathname = usePathname();
   const responsiveConfig = useResponsiveLayout();
+  const insets = useSafeAreaInsets();
 
   // Only show on mobile devices
   if (responsiveConfig.deviceType !== 'mobile') {
     return null;
   }
-
-  // 在手机端过滤掉直播 tab
-  const filteredNavigationItems = navigationItems.filter(item => 
-    responsiveConfig.deviceType !== 'mobile' || item.name !== 'live'
-  );
 
   const handleNavigation = (route: string) => {
     if (route === '/') {
@@ -90,12 +87,14 @@ export const MobileBottomNavigation: React.FC<MobileBottomNavigationProps> = ({
     container: {
       backgroundColor,
       borderTopColor: colorScheme === 'dark' ? '#38383A' : '#C6C6C8',
+      height: 49 + 8 + Math.max(insets.bottom, 16),
+      paddingBottom: Math.max(insets.bottom, 16),
     },
   });
 
   return (
     <View style={[styles.container, dynamicStyles.container]}>
-      {filteredNavigationItems.map((item) => {
+      {navigationItems.map((item) => {
         const isActive = isActiveRoute(item.route);
         const IconComponent = item.icon;
 
@@ -128,8 +127,6 @@ export const MobileBottomNavigation: React.FC<MobileBottomNavigationProps> = ({
 const styles = StyleSheet.create({
   container: {
     flexDirection: 'row',
-    height: 84, // 49 + 35 for safe area
-    paddingBottom: 35, // Safe area padding
     paddingTop: 8,
     paddingHorizontal: 8,
     borderTopWidth: 0.5,
