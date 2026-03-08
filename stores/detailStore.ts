@@ -1,5 +1,5 @@
 import { create } from "zustand";
-import { SearchResult, api } from "@/services/api";
+import { type SearchResult, type VideoDetail, api } from "@/services/api";
 import { getResolutionFromM3U8 } from "@/services/m3u8";
 import { useSettingsStore } from "@/stores/settingsStore";
 import { FavoriteManager } from "@/services/storage";
@@ -8,6 +8,27 @@ import Logger from "@/utils/Logger";
 const logger = Logger.withTag('DetailStore');
 
 export type SearchResultWithResolution = SearchResult & { resolution?: string | null };
+
+const normalizeTitle = (value: string): string => value.replace(/\s+/g, "").trim().toLowerCase();
+
+const isTitleMatch = (title: string, query: string): boolean => {
+  const normalizedTitle = normalizeTitle(title);
+  const normalizedQuery = normalizeTitle(query);
+  return normalizedTitle === normalizedQuery || normalizedTitle.includes(normalizedQuery) || normalizedQuery.includes(normalizedTitle);
+};
+
+const mapVideoDetailToSearchResult = (detail: VideoDetail): SearchResultWithResolution => ({
+  id: detail.id,
+  title: detail.title,
+  poster: detail.poster,
+  episodes: detail.episodes,
+  source: detail.source,
+  source_name: detail.source_name,
+  class: detail.class,
+  year: detail.year || "",
+  desc: detail.desc,
+  type_name: detail.type_name,
+});
 
 interface DetailState {
   q: string | null;
@@ -70,7 +91,7 @@ const useDetailStore = create<DetailState>((set, get) => ({
       
       const resultsWithResolution = await Promise.all(
         results.map(async (searchResult) => {
-          let resolution;
+          let resolution: string | null | undefined;
           const m3u8Start = performance.now();
           try {
             if (searchResult.episodes && searchResult.episodes.length > 0) {
@@ -112,6 +133,46 @@ const useDetailStore = create<DetailState>((set, get) => ({
     try {
       // Optimization for favorite navigation
       if (preferredSource && id) {
+        let hasDirectDetail = false;
+
+        const directDetailStart = performance.now();
+        logger.info(`[PERF] API getVideoDetail (preferred) START - source: ${preferredSource}, id: ${id}`);
+
+        try {
+          const preferredDetail = await api.getVideoDetail(preferredSource, id);
+          const directDetailEnd = performance.now();
+          logger.info(`[PERF] API getVideoDetail (preferred) END - took ${(directDetailEnd - directDetailStart).toFixed(2)}ms`);
+
+          if (!signal.aborted && preferredDetail.episodes.length > 0) {
+            logger.info(`[SUCCESS] Preferred detail loaded directly from ${preferredSource}`);
+            await processAndSetResults([mapVideoDetailToSearchResult(preferredDetail)], false);
+            set({ loading: false });
+            hasDirectDetail = true;
+          }
+        } catch (directDetailError) {
+          logger.warn(`[WARN] Direct detail fetch failed for preferred source "${preferredSource}":`, directDetailError);
+        }
+
+        if (hasDirectDetail) {
+          const searchAllStart = performance.now();
+          logger.info(`[PERF] API searchVideos (background after direct detail) START`);
+
+          try {
+            const { results: allResults } = await api.searchVideos(q);
+
+            const searchAllEnd = performance.now();
+            logger.info(`[PERF] API searchVideos (background after direct detail) END - took ${(searchAllEnd - searchAllStart).toFixed(2)}ms, results: ${allResults.length}`);
+
+            if (!signal.aborted) {
+              await processAndSetResults(allResults.filter(item => isTitleMatch(item.title, q)), true);
+            }
+          } catch (backgroundError) {
+            logger.warn(`[WARN] Background search after direct detail failed:`, backgroundError);
+          }
+
+          return;
+        }
+
         const searchPreferredStart = performance.now();
         logger.info(`[PERF] API searchVideo (preferred) START - source: ${preferredSource}, query: "${q}"`);
         
@@ -123,7 +184,7 @@ const useDetailStore = create<DetailState>((set, get) => ({
           preferredResult = response.results;
         } catch (error) {
           preferredSearchError = error;
-          logger.error(`[ERROR] API searchVideo (preferred) FAILED - source: ${preferredSource}, error:`, error);
+          logger.warn(`[WARN] API searchVideo (preferred) FAILED - source: ${preferredSource}, falling back to all sources:`, error);
         }
         
         const searchPreferredEnd = performance.now();
@@ -153,7 +214,7 @@ const useDetailStore = create<DetailState>((set, get) => ({
             const fallbackEnd = performance.now();
             logger.info(`[PERF] FALLBACK search END - took ${(fallbackEnd - fallbackStart).toFixed(2)}ms, total results: ${allResults.length}`);
             
-            const filteredResults = allResults.filter(item => item.title === q);
+            const filteredResults = allResults.filter(item => isTitleMatch(item.title, q));
             logger.info(`[FALLBACK] Filtered results: ${filteredResults.length} matches for "${q}"`);
             
             if (filteredResults.length > 0) {
@@ -188,7 +249,7 @@ const useDetailStore = create<DetailState>((set, get) => ({
             logger.info(`[PERF] API searchVideos (background) END - took ${(searchAllEnd - searchAllStart).toFixed(2)}ms, results: ${allResults.length}`);
             
             if (signal.aborted) return;
-            await processAndSetResults(allResults.filter(item => item.title === q), true);
+              await processAndSetResults(allResults.filter(item => isTitleMatch(item.title, q)), true);
           } catch (backgroundError) {
             logger.warn(`[WARN] Background search failed, but preferred source already succeeded:`, backgroundError);
           }

@@ -3,6 +3,7 @@ import { View, Text, StyleSheet, Pressable } from "react-native";
 import { Pause, Play, SkipForward, List, Tv, ArrowDownToDot, ArrowUpFromDot, Gauge } from "lucide-react-native";
 import { ThemedText } from "@/components/ThemedText";
 import { MediaButton } from "@/components/MediaButton";
+import { useResponsiveLayout } from "@/hooks/useResponsiveLayout";
 
 import usePlayerStore from "@/stores/playerStore";
 import useDetailStore from "@/stores/detailStore";
@@ -14,6 +15,7 @@ interface PlayerControlsProps {
 }
 
 export const PlayerControls: React.FC<PlayerControlsProps> = ({ showControls, setShowControls }) => {
+  const { deviceType } = useResponsiveLayout();
   const {
     currentEpisodeIndex,
     episodes,
@@ -42,6 +44,7 @@ export const PlayerControls: React.FC<PlayerControlsProps> = ({ showControls, se
   const currentSource = resources.find((r) => r.source === detail?.source);
   const currentSourceName = currentSource?.source_name;
   const hasNextEpisode = currentEpisodeIndex < (episodes.length || 0) - 1;
+  const isTouchDevice = deviceType !== "tv";
 
   const formatTime = (milliseconds: number) => {
     if (!milliseconds) return "00:00";
@@ -64,6 +67,11 @@ export const PlayerControls: React.FC<PlayerControlsProps> = ({ showControls, se
           {videoTitle} {currentEpisodeTitle ? `- ${currentEpisodeTitle}` : ""}{" "}
           {currentSourceName ? `(${currentSourceName})` : ""}
         </Text>
+        {isTouchDevice && (
+          <MediaButton onPress={() => setShowControls(false)} style={styles.closeButton}>
+            <Text style={styles.closeButtonText}>关闭</Text>
+          </MediaButton>
+        )}
       </View>
 
       <View style={styles.bottomControlsContainer}>
@@ -91,7 +99,7 @@ export const PlayerControls: React.FC<PlayerControlsProps> = ({ showControls, se
             <ArrowDownToDot color="white" size={24} />
           </MediaButton>
 
-          <MediaButton onPress={togglePlayPause} hasTVPreferredFocus={showControls}>
+          <MediaButton onPress={togglePlayPause} hasTVPreferredFocus={showControls && !isTouchDevice}>
             {status?.isLoaded && status.isPlaying ? (
               <Pause color="white" size={24} />
             ) : (
@@ -143,6 +151,14 @@ const styles = StyleSheet.create({
     flex: 1,
     textAlign: "center",
     marginHorizontal: 10,
+  },
+  closeButton: {
+    minWidth: 72,
+  },
+  closeButtonText: {
+    color: "white",
+    fontSize: 14,
+    fontWeight: "600",
   },
   bottomControlsContainer: {
     width: "100%",

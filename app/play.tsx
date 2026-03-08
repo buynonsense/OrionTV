@@ -4,6 +4,7 @@ import { useLocalSearchParams, useRouter } from "expo-router";
 import { Video } from "expo-av";
 import { useKeepAwake } from "expo-keep-awake";
 import { ThemedView } from "@/components/ThemedView";
+import { ThemedText } from "@/components/ThemedText";
 import { PlayerControls } from "@/components/PlayerControls";
 import { EpisodeSelectionModal } from "@/components/EpisodeSelectionModal";
 import { SourceSelectionModal } from "@/components/SourceSelectionModal";
@@ -18,6 +19,7 @@ import usePlayerStore, { selectCurrentEpisode } from "@/stores/playerStore";
 import { useResponsiveLayout } from "@/hooks/useResponsiveLayout";
 import { useVideoHandlers } from "@/hooks/useVideoHandlers";
 import Logger from '@/utils/Logger';
+import { StyledButton } from "@/components/StyledButton";
 
 const logger = Logger.withTag('PlayScreen');
 
@@ -59,14 +61,36 @@ const createResponsiveStyles = (deviceType: string) => {
     videoPlayer: {
       ...StyleSheet.absoluteFillObject,
     },
-    loadingContainer: {
-      ...StyleSheet.absoluteFillObject,
-      backgroundColor: "rgba(0, 0, 0, 0.8)",
-      justifyContent: "center",
-      alignItems: "center",
-      zIndex: 10,
-    },
-  });
+      loadingContainer: {
+        ...StyleSheet.absoluteFillObject,
+        backgroundColor: "rgba(0, 0, 0, 0.8)",
+        justifyContent: "center",
+        alignItems: "center",
+        zIndex: 10,
+      },
+      errorContainer: {
+        justifyContent: "center",
+        alignItems: "center",
+        paddingHorizontal: 24,
+        gap: 12,
+      },
+      errorTitle: {
+        color: "white",
+        fontSize: isMobile ? 24 : 28,
+        fontWeight: "bold",
+        textAlign: "center",
+      },
+      errorText: {
+        color: "white",
+        fontSize: isMobile ? 16 : 18,
+        textAlign: "center",
+        opacity: 0.85,
+      },
+      errorButton: {
+        minWidth: isMobile ? 180 : 220,
+        marginTop: 8,
+      },
+    });
 };
 
 export default function PlayScreen() {
@@ -93,12 +117,13 @@ export default function PlayScreen() {
   const episodeIndex = parseInt(episodeIndexStr || "0", 10);
   const position = positionStr ? parseInt(positionStr, 10) : undefined;
 
-  const { detail } = useDetailStore();
+  const { detail, error: detailError, abort } = useDetailStore();
   const source = sourceStr || detail?.source;
   const id = videoId || detail?.id.toString();
   const title = videoTitle || detail?.title;
   const {
     isLoading,
+    error: playerError,
     showControls,
     // showNextEpisodeOverlay,
     initialPosition,
@@ -147,10 +172,11 @@ export default function PlayScreen() {
     logger.info(`[PERF] PlayScreen useEffect END - took ${(perfEnd - perfStart).toFixed(2)}ms`);
 
     return () => {
+      abort();
       logger.info(`[PERF] PlayScreen unmounting - calling reset()`);
       reset(); // Reset state when component unmounts
     };
-  }, [episodeIndex, source, position, setVideoRef, reset, loadVideo, id, title]);
+  }, [abort, episodeIndex, source, position, setVideoRef, reset, loadVideo, id, title]);
 
   // 优化的屏幕点击处理
   const onScreenPress = useCallback(() => {
@@ -209,6 +235,18 @@ export default function PlayScreen() {
     };
   }, [isLoading]);
 
+  const visibleError = playerError || detailError;
+
+  if (visibleError) {
+    return (
+      <ThemedView style={[dynamicStyles.container, dynamicStyles.errorContainer]}>
+        <ThemedText style={dynamicStyles.errorTitle}>播放失败</ThemedText>
+        <ThemedText style={dynamicStyles.errorText}>{visibleError}</ThemedText>
+        <StyledButton text="返回详情页" onPress={() => router.back()} style={dynamicStyles.errorButton} />
+      </ThemedView>
+    );
+  }
+
   if (!detail) {
     return <VideoLoadingAnimation showProgressBar />;
   }
@@ -219,7 +257,6 @@ export default function PlayScreen() {
         activeOpacity={1}
         style={dynamicStyles.videoContainer}
         onPress={onScreenPress}
-        disabled={deviceType !== "tv" && showControls} // 移动端和平板端在显示控制条时禁用触摸
       >
         {/* 条件渲染Video组件：只有在有有效URL时才渲染 */}
         {currentEpisode?.url ? (
@@ -228,7 +265,7 @@ export default function PlayScreen() {
           <LoadingContainer style={dynamicStyles.loadingContainer} currentEpisode={currentEpisode} />
         )}
 
-        {showControls && deviceType === "tv" && (
+        {showControls && (
           <PlayerControls showControls={showControls} setShowControls={setShowControls} />
         )}
 

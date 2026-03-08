@@ -31,6 +31,8 @@ interface PlayerState {
   playbackRate: number;
   introEndTime?: number;
   outroStartTime?: number;
+  error: string | null;
+  activeLoadRequestId: number;
   setVideoRef: (ref: RefObject<Video>) => void;
   loadVideo: (options: {
     source: string;
@@ -78,6 +80,8 @@ const usePlayerStore = create<PlayerState>((set, get) => ({
   playbackRate: 1.0,
   introEndTime: undefined,
   outroStartTime: undefined,
+  error: null,
+  activeLoadRequestId: 0,
   _seekTimeout: undefined,
   _isRecordSaveThrottled: false,
 
@@ -86,6 +90,8 @@ const usePlayerStore = create<PlayerState>((set, get) => ({
   loadVideo: async ({ source, id, episodeIndex, position, title }) => {
     const perfStart = performance.now();
     logger.info(`[PERF] PlayerStore.loadVideo START - source: ${source}, id: ${id}, title: ${title}`);
+    const requestId = get().activeLoadRequestId + 1;
+    const isStaleRequest = () => get().activeLoadRequestId !== requestId;
     
     let detail = useDetailStore.getState().detail;
     let episodes: string[] = [];
@@ -100,6 +106,8 @@ const usePlayerStore = create<PlayerState>((set, get) => ({
     }
 
     set({
+      activeLoadRequestId: requestId,
+      error: null,
       isLoading: true,
     });
 
@@ -110,7 +118,12 @@ const usePlayerStore = create<PlayerState>((set, get) => ({
       const detailInitStart = performance.now();
       logger.info(`[PERF] DetailStore.init START - ${title}`);
       
-      await useDetailStore.getState().init(title, source, id);
+       await useDetailStore.getState().init(title, source, id);
+
+       if (isStaleRequest()) {
+         logger.info(`[PERF] PlayerStore.loadVideo ABORTED - stale request after detail init (${requestId})`);
+         return;
+       }
       
       const detailInitEnd = performance.now();
       logger.info(`[PERF] DetailStore.init END - took ${(detailInitEnd - detailInitStart).toFixed(2)}ms`);
@@ -126,11 +139,11 @@ const usePlayerStore = create<PlayerState>((set, get) => ({
           logger.error(`[ERROR] DetailStore error: ${detailStoreState.error}`);
           set({ 
             isLoading: false,
-            // 可以选择在这里设置一个错误状态，但playerStore可能没有error字段
+            error: detailStoreState.error || "加载视频详情失败，请稍后重试",
           });
         } else {
           logger.error(`[ERROR] DetailStore init completed but no detail found and no error reported`);
-          set({ isLoading: false });
+          set({ isLoading: false, error: "未找到可播放的视频详情" });
         }
         return;
       }
@@ -155,7 +168,7 @@ const usePlayerStore = create<PlayerState>((set, get) => ({
           detail = sourceWithEpisodes;
         } else {
           logger.error(`[ERROR] No source with episodes found in searchResults`);
-          set({ isLoading: false });
+          set({ isLoading: false, error: "当前视频没有可用剧集" });
           return;
         }
       }
@@ -179,13 +192,13 @@ const usePlayerStore = create<PlayerState>((set, get) => ({
     // 最终验证：确保我们有有效的detail和episodes数据
     if (!detail) {
       logger.error(`[ERROR] Final check failed: detail is null`);
-      set({ isLoading: false });
+      set({ isLoading: false, error: "视频详情加载失败" });
       return;
     }
     
     if (!episodes || episodes.length === 0) {
       logger.error(`[ERROR] Final check failed: no episodes available for source "${detail.source}" (${detail.source_name})`);
-      set({ isLoading: false });
+      set({ isLoading: false, error: "当前播放源没有可用剧集" });
       return;
     }
     
@@ -214,9 +227,15 @@ const usePlayerStore = create<PlayerState>((set, get) => ({
       }));
       const episodesMappingEnd = performance.now();
       logger.info(`[PERF] Episodes mapping (${episodes.length} episodes) took ${(episodesMappingEnd - episodesMappingStart).toFixed(2)}ms`);
+
+      if (isStaleRequest()) {
+        logger.info(`[PERF] PlayerStore.loadVideo ABORTED - stale request before final state write (${requestId})`);
+        return;
+      }
       
       set({
         isLoading: false,
+        error: null,
         currentEpisodeIndex: episodeIndex,
         initialPosition: position || initialPositionFromRecord,
         playbackRate: savedPlaybackRate,
@@ -230,7 +249,9 @@ const usePlayerStore = create<PlayerState>((set, get) => ({
       
     } catch (error) {
       logger.debug("Failed to load play record", error);
-      set({ isLoading: false });
+      if (!isStaleRequest()) {
+        set({ isLoading: false, error: "读取播放记录失败，请稍后重试" });
+      }
       
       const perfEnd = performance.now();
       logger.info(`[PERF] PlayerStore.loadVideo ERROR - total time: ${(perfEnd - perfStart).toFixed(2)}ms`);
@@ -452,11 +473,13 @@ const usePlayerStore = create<PlayerState>((set, get) => ({
   },
 
   reset: () => {
-    set({
+    set((state) => ({
       episodes: [],
       currentEpisodeIndex: 0,
       status: null,
       isLoading: true,
+      error: null,
+      activeLoadRequestId: state.activeLoadRequestId + 1,
       showControls: false,
       showEpisodeModal: false,
       showSourceModal: false,
@@ -466,7 +489,7 @@ const usePlayerStore = create<PlayerState>((set, get) => ({
       playbackRate: 1.0,
       introEndTime: undefined,
       outroStartTime: undefined,
-    });
+    }));
   },
 
   handleVideoError: async (errorType: 'ssl' | 'network' | 'other', failedUrl: string) => {
@@ -479,7 +502,7 @@ const usePlayerStore = create<PlayerState>((set, get) => ({
     
     if (!detail) {
       logger.error(`[VIDEO_ERROR] Cannot fallback - no detail available`);
-      set({ isLoading: false });
+      set({ isLoading: false, error: "播放失败且没有可切换的详情信息" });
       return;
     }
     
@@ -498,7 +521,7 @@ const usePlayerStore = create<PlayerState>((set, get) => ({
         text1: "播放失败", 
         text2: "所有播放源都不可用，请稍后重试" 
       });
-      set({ isLoading: false });
+      set({ isLoading: false, error: "所有播放源都不可用，请稍后重试" });
       return;
     }
     
@@ -518,6 +541,7 @@ const usePlayerStore = create<PlayerState>((set, get) => ({
         
         set({
           episodes: mappedEpisodes,
+          error: null,
           isLoading: false, // 让Video组件重新渲染
         });
         
@@ -532,11 +556,11 @@ const usePlayerStore = create<PlayerState>((set, get) => ({
         });
       } else {
         logger.error(`[VIDEO_ERROR] Fallback source doesn't have episode ${currentEpisodeIndex + 1}`);
-        set({ isLoading: false });
+        set({ isLoading: false, error: "备用播放源没有当前剧集" });
       }
     } catch (error) {
       logger.error(`[VIDEO_ERROR] Failed to switch to fallback source:`, error);
-      set({ isLoading: false });
+      set({ isLoading: false, error: "切换播放源失败，请稍后重试" });
     }
   },
 }));

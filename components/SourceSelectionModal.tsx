@@ -1,6 +1,8 @@
 import React from "react";
 import { View, Text, StyleSheet, Modal, FlatList } from "react-native";
 import { StyledButton } from "./StyledButton";
+
+import { useResponsiveLayout } from "@/hooks/useResponsiveLayout";
 import useDetailStore from "@/stores/detailStore";
 import usePlayerStore from "@/stores/playerStore";
 import Logger from '@/utils/Logger';
@@ -8,8 +10,10 @@ import Logger from '@/utils/Logger';
 const logger = Logger.withTag('SourceSelectionModal');
 
 export const SourceSelectionModal: React.FC = () => {
+  const { deviceType } = useResponsiveLayout();
   const { showSourceModal, setShowSourceModal, loadVideo, currentEpisodeIndex, status } = usePlayerStore();
   const { searchResults, detail, setDetail } = useDetailStore();
+  const numColumns = deviceType === "mobile" ? 2 : 3;
 
   const onSelectSource = (index: number) => {
     logger.debug("onSelectSource", index, searchResults[index].source, detail?.source);
@@ -37,11 +41,14 @@ export const SourceSelectionModal: React.FC = () => {
   return (
     <Modal visible={showSourceModal} transparent={true} animationType="slide" onRequestClose={onClose}>
       <View style={styles.modalContainer}>
-        <View style={styles.modalContent}>
-          <Text style={styles.modalTitle}>选择播放源</Text>
+        <View style={[styles.modalContent, deviceType === "mobile" ? styles.mobileModalContent : deviceType === "tablet" ? styles.tabletModalContent : null]}>
+          <View style={styles.headerRow}>
+            <Text style={styles.modalTitle}>选择播放源</Text>
+            {deviceType !== "tv" && <StyledButton text="关闭" onPress={onClose} style={styles.closeButton} />}
+          </View>
           <FlatList
             data={searchResults}
-            numColumns={3}
+            numColumns={numColumns}
             contentContainerStyle={styles.sourceList}
             keyExtractor={(item, index) => `source-${item.source}-${index}`}
             renderItem={({ item, index }) => (
@@ -49,8 +56,8 @@ export const SourceSelectionModal: React.FC = () => {
                 text={item.source_name}
                 onPress={() => onSelectSource(index)}
                 isSelected={detail?.source === item.source}
-                hasTVPreferredFocus={detail?.source === item.source}
-                style={styles.sourceItem}
+                hasTVPreferredFocus={deviceType === "tv" && detail?.source === item.source}
+                style={[styles.sourceItem, deviceType === "mobile" ? styles.mobileSourceItem : null]}
                 textStyle={styles.sourceItemText}
               />
             )}
@@ -66,13 +73,28 @@ const styles = StyleSheet.create({
     flex: 1,
     flexDirection: "row",
     justifyContent: "flex-end",
-    backgroundColor: "transparent",
+    backgroundColor: "rgba(0, 0, 0, 0.35)",
   },
   modalContent: {
     width: 600,
     height: "100%",
     backgroundColor: "rgba(0, 0, 0, 0.85)",
     padding: 20,
+  },
+  mobileModalContent: {
+    width: "100%",
+  },
+  tabletModalContent: {
+    width: 420,
+  },
+  headerRow: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+    marginBottom: 12,
+  },
+  closeButton: {
+    minWidth: 80,
   },
   modalTitle: {
     color: "white",
@@ -90,6 +112,9 @@ const styles = StyleSheet.create({
     marginLeft: 10,
     marginRight: 8,
     width: "30%",
+  },
+  mobileSourceItem: {
+    width: "44%",
   },
   sourceItemText: {
     fontSize: 14,

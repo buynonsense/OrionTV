@@ -1,6 +1,8 @@
 import React from "react";
 import { View, Text, StyleSheet, Modal, FlatList } from "react-native";
 import { StyledButton } from "./StyledButton";
+
+import { useResponsiveLayout } from "@/hooks/useResponsiveLayout";
 import usePlayerStore from "@/stores/playerStore";
 
 interface SpeedOption {
@@ -19,7 +21,9 @@ const SPEED_OPTIONS: SpeedOption[] = [
 ];
 
 export const SpeedSelectionModal: React.FC = () => {
+  const { deviceType } = useResponsiveLayout();
   const { showSpeedModal, setShowSpeedModal, playbackRate, setPlaybackRate } = usePlayerStore();
+  const numColumns = deviceType === "mobile" ? 2 : 3;
 
   const onSelectSpeed = (rate: number) => {
     setPlaybackRate(rate);
@@ -33,11 +37,14 @@ export const SpeedSelectionModal: React.FC = () => {
   return (
     <Modal visible={showSpeedModal} transparent={true} animationType="slide" onRequestClose={onClose}>
       <View style={styles.modalContainer}>
-        <View style={styles.modalContent}>
-          <Text style={styles.modalTitle}>播放速度</Text>
+        <View style={[styles.modalContent, deviceType === "mobile" ? styles.mobileModalContent : deviceType === "tablet" ? styles.tabletModalContent : null]}>
+          <View style={styles.headerRow}>
+            <Text style={styles.modalTitle}>播放速度</Text>
+            {deviceType !== "tv" && <StyledButton text="关闭" onPress={onClose} style={styles.closeButton} />}
+          </View>
           <FlatList
             data={SPEED_OPTIONS}
-            numColumns={3}
+            numColumns={numColumns}
             contentContainerStyle={styles.speedList}
             keyExtractor={(item) => `speed-${item.rate}`}
             renderItem={({ item }) => (
@@ -45,8 +52,8 @@ export const SpeedSelectionModal: React.FC = () => {
                 text={item.label}
                 onPress={() => onSelectSpeed(item.rate)}
                 isSelected={playbackRate === item.rate}
-                hasTVPreferredFocus={playbackRate === item.rate}
-                style={styles.speedItem}
+                hasTVPreferredFocus={deviceType === "tv" && playbackRate === item.rate}
+                style={[styles.speedItem, deviceType === "mobile" ? styles.mobileSpeedItem : null]}
                 textStyle={styles.speedItemText}
               />
             )}
@@ -62,13 +69,28 @@ const styles = StyleSheet.create({
     flex: 1,
     flexDirection: "row",
     justifyContent: "flex-end",
-    backgroundColor: "transparent",
+    backgroundColor: "rgba(0, 0, 0, 0.35)",
   },
   modalContent: {
     width: 500,
     height: "100%",
     backgroundColor: "rgba(0, 0, 0, 0.85)",
     padding: 20,
+  },
+  mobileModalContent: {
+    width: "100%",
+  },
+  tabletModalContent: {
+    width: 420,
+  },
+  headerRow: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+    marginBottom: 12,
+  },
+  closeButton: {
+    minWidth: 80,
   },
   modalTitle: {
     color: "white",
@@ -86,6 +108,9 @@ const styles = StyleSheet.create({
     marginLeft: 10,
     marginRight: 8,
     width: "30%",
+  },
+  mobileSpeedItem: {
+    width: "44%",
   },
   speedItemText: {
     fontSize: 16,

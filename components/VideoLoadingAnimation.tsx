@@ -1,4 +1,4 @@
-import React, { useEffect, useRef } from "react";
+import { useEffect, useRef } from "react";
 import { View, StyleSheet, Animated, Easing } from "react-native";
 import { LinearGradient } from "expo-linear-gradient";
 
@@ -6,23 +6,23 @@ interface VideoLoadingAnimationProps {
   showProgressBar?: boolean;
 }
 
-const VideoLoadingAnimation: React.FC<VideoLoadingAnimationProps> = ({ showProgressBar = true }) => {
+const VideoLoadingAnimation = ({ showProgressBar = true }: VideoLoadingAnimationProps) => {
   const floatAnim = useRef(new Animated.Value(0)).current;
   const pulseAnim = useRef(new Animated.Value(0)).current;
-  const bounceAnims = [
-    useRef(new Animated.Value(0)).current,
-    useRef(new Animated.Value(0)).current,
-    useRef(new Animated.Value(0)).current,
-  ];
+  const bounceAnims = useRef([
+    new Animated.Value(0),
+    new Animated.Value(0),
+    new Animated.Value(0),
+  ]).current;
   const progressAnim = useRef(new Animated.Value(0)).current;
   const gradientAnim = useRef(new Animated.Value(0)).current;
   const textFadeAnim = useRef(new Animated.Value(0)).current;
-  const shapeAnims = [
-    useRef(new Animated.Value(0)).current,
-    useRef(new Animated.Value(0)).current,
-    useRef(new Animated.Value(0)).current,
-    useRef(new Animated.Value(0)).current,
-  ];
+  const shapeAnims = useRef([
+    new Animated.Value(0),
+    new Animated.Value(0),
+    new Animated.Value(0),
+    new Animated.Value(0),
+  ]).current;
 
   useEffect(() => {
     const floatAnimation = Animated.loop(
@@ -114,10 +114,10 @@ const VideoLoadingAnimation: React.FC<VideoLoadingAnimationProps> = ({ showProgr
       ])
     );
 
-    const shapeAnimations = shapeAnims.map((anim, i) =>
+    const shapeAnimations = shapeAnims.map((anim, index) =>
       Animated.loop(
         Animated.sequence([
-          Animated.delay(i * 2000),
+          Animated.delay(index * 2000),
           Animated.timing(anim, {
             toValue: 1,
             duration: 8000,
@@ -137,7 +137,7 @@ const VideoLoadingAnimation: React.FC<VideoLoadingAnimationProps> = ({ showProgr
       textFadeAnimation,
       ...shapeAnimations,
     ]).start();
-  }, []);
+  }, [bounceAnims, floatAnim, gradientAnim, progressAnim, pulseAnim, shapeAnims, textFadeAnim]);
 
   const animatedStyles = {
     float: {
@@ -166,7 +166,7 @@ const VideoLoadingAnimation: React.FC<VideoLoadingAnimationProps> = ({ showProgr
     textFade: {
       opacity: textFadeAnim.interpolate({ inputRange: [0, 1], outputRange: [0.6, 1] }),
     },
-    shapes: shapeAnims.map((anim, i) => ({
+    shapes: shapeAnims.map((anim) => ({
       transform: [
         {
           translateY: anim.interpolate({

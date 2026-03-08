@@ -75,7 +75,7 @@ const VideoCard = forwardRef<View, VideoCardProps>(
       } else {
         router.push({
           pathname: "/detail",
-          params: { source, q: title },
+          params: { source, id, q: title },
         });
       }
     };
@@ -151,7 +151,7 @@ const VideoCard = forwardRef<View, VideoCardProps>(
     return (
       <Animated.View style={[styles.wrapper, animatedStyle, { opacity: fadeAnim }]}>
         <Pressable
-          android_ripple={Platform.isTV || deviceType !== 'tv' ? { color: 'transparent' } : { color: Colors.dark.link }}
+          android_ripple={Platform.isTV || deviceType === 'tv' ? { color: 'transparent' } : { color: Colors.dark.link }}
           onPress={handlePress}
           onLongPress={handleLongPress}
           onFocus={handleFocus}
