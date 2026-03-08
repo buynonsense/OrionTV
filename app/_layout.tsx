@@ -2,7 +2,7 @@ import { DarkTheme, DefaultTheme, ThemeProvider } from "@react-navigation/native
 import { useFonts } from "expo-font";
 import { Stack } from "expo-router";
 import * as SplashScreen from "expo-splash-screen";
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import { Platform, View, StyleSheet } from "react-native";
 import Toast from "react-native-toast-message";
 import { SafeAreaProvider } from "react-native-safe-area-context";
@@ -15,6 +15,7 @@ import { useUpdateStore, initUpdateStore } from "@/stores/updateStore";
 import { UpdateModal } from "@/components/UpdateModal";
 import { UPDATE_CONFIG } from "@/constants/UpdateConfig";
 import { useResponsiveLayout } from "@/hooks/useResponsiveLayout";
+import { applyDevBootstrap } from '@/utils/devBootstrap';
 import Logger from '@/utils/Logger';
 
 const logger = Logger.withTag('RootLayout');
@@ -24,6 +25,7 @@ SplashScreen.preventAutoHideAsync();
 
 export default function RootLayout() {
   const colorScheme = "dark";
+  const [isAppInitialized, setIsAppInitialized] = useState(false);
   const [loaded, error] = useFonts({
     SpaceMono: require("../assets/fonts/SpaceMono-Regular.ttf"),
   });
@@ -35,26 +37,38 @@ export default function RootLayout() {
 
   useEffect(() => {
     const initializeApp = async () => {
-      await loadSettings();
+      try {
+        await applyDevBootstrap();
+        await loadSettings();
+      } catch (initError) {
+        logger.warn(`Failed to initialize app bootstrap: ${initError}`);
+      } finally {
+        setIsAppInitialized(true);
+      }
     };
-    initializeApp();
+
+    void initializeApp().catch((initError) => {
+      logger.warn(`Unexpected app initialization rejection: ${initError}`);
+    });
     initUpdateStore(); // 初始化更新存储
   }, [loadSettings]);
 
   useEffect(() => {
     if (apiBaseUrl) {
-      checkLoginStatus(apiBaseUrl);
+      void checkLoginStatus(apiBaseUrl).catch((loginError) => {
+        logger.warn(`Failed to check login status during app init: ${loginError}`);
+      });
     }
   }, [apiBaseUrl, checkLoginStatus]);
 
   useEffect(() => {
-    if (loaded || error) {
+    if ((loaded || error) && isAppInitialized) {
       SplashScreen.hideAsync();
       if (error) {
         logger.warn(`Error in loading fonts: ${error}`);
       }
     }
-  }, [loaded, error]);
+  }, [loaded, error, isAppInitialized]);
 
   // 检查更新
   useEffect(() => {
@@ -68,15 +82,14 @@ export default function RootLayout() {
   }, [loaded, lastCheckTime, checkForUpdate]);
 
   useEffect(() => {
-    // 只有在非手机端才启动远程控制服务器
-    if (remoteInputEnabled && responsiveConfig.deviceType !== "mobile") {
+    if (remoteInputEnabled && responsiveConfig.deviceType === "tv") {
       startServer();
     } else {
       stopServer();
     }
   }, [remoteInputEnabled, startServer, stopServer, responsiveConfig.deviceType]);
 
-  if (!loaded && !error) {
+  if ((!loaded && !error) || !isAppInitialized) {
     return null;
   }
 

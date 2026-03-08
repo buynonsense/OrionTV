@@ -1,4 +1,5 @@
 // Learn more https://docs.expo.io/guides/customizing-metro
+const fs = require("fs");
 const { getDefaultConfig } = require("expo/metro-config");
 const path = require("path");
 
@@ -25,16 +26,40 @@ const config = getDefaultConfig(projectRoot);
 //   config.resolver.sourceExts = tvSourceExts;
 // }
 
-// This can be replaced with `find-yarn-workspace-root`
-const monorepoRoot = path.resolve(projectRoot, "../..");
+function findWorkspaceRoot(startDir) {
+  let currentDir = path.dirname(startDir);
 
-// 1. Watch all files within the monorepo
-config.watchFolders = [monorepoRoot];
-// 2. Let Metro know where to resolve packages and in what order
-config.resolver.nodeModulesPaths = [
-  path.resolve(projectRoot, "node_modules"),
-  path.resolve(monorepoRoot, "node_modules"),
-];
-config.resolver.disableHierarchicalLookup = true;
+  while (currentDir !== path.dirname(currentDir)) {
+    const packageJsonPath = path.join(currentDir, "package.json");
+
+    if (fs.existsSync(packageJsonPath)) {
+      try {
+        const packageJson = JSON.parse(fs.readFileSync(packageJsonPath, "utf8"));
+
+        if (packageJson.workspaces) {
+          return currentDir;
+        }
+      } catch {
+        return null;
+      }
+    }
+
+    currentDir = path.dirname(currentDir);
+  }
+
+  return null;
+}
+
+const workspaceRoot = findWorkspaceRoot(projectRoot);
+
+// 只有在真实的 workspace 环境下才扩展 Metro 搜索范围，避免把整个用户目录加入监听。
+if (workspaceRoot) {
+  config.watchFolders = [workspaceRoot];
+  config.resolver.nodeModulesPaths = [
+    path.resolve(projectRoot, "node_modules"),
+    path.resolve(workspaceRoot, "node_modules"),
+  ];
+  config.resolver.disableHierarchicalLookup = true;
+}
 
 module.exports = config;

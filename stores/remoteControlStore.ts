@@ -1,8 +1,21 @@
 import { create } from 'zustand';
-import { remoteControlService } from '@/services/remoteControlService';
 import Logger from '@/utils/Logger';
 
 const logger = Logger.withTag('RemoteControlStore');
+
+type RemoteControlServiceInstance = typeof import('@/services/remoteControlService').remoteControlService;
+
+let remoteControlServiceInstance: RemoteControlServiceInstance | null = null;
+
+const getRemoteControlService = (): RemoteControlServiceInstance => {
+  if (remoteControlServiceInstance) {
+    return remoteControlServiceInstance;
+  }
+
+  const remoteControlModule = require('@/services/remoteControlService') as typeof import('@/services/remoteControlService');
+  remoteControlServiceInstance = remoteControlModule.remoteControlService;
+  return remoteControlServiceInstance;
+};
 
 interface RemoteControlState {
   isServerRunning: boolean;
@@ -31,6 +44,8 @@ export const useRemoteControlStore = create<RemoteControlState>((set, get) => ({
     if (get().isServerRunning) {
       return;
     }
+    const remoteControlService = getRemoteControlService();
+
     remoteControlService.init({
       onMessage: (message: string) => {
         logger.debug('Received message:', message);
@@ -55,8 +70,8 @@ export const useRemoteControlStore = create<RemoteControlState>((set, get) => ({
   },
 
   stopServer: () => {
-    if (get().isServerRunning) {
-      remoteControlService.stopServer();
+    if (get().isServerRunning && remoteControlServiceInstance) {
+      remoteControlServiceInstance.stopServer();
       set({ isServerRunning: false, serverUrl: null });
     }
   },
