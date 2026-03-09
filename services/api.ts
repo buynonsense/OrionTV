@@ -90,9 +90,12 @@ export interface ServerConfig {
   StorageType: "localstorage" | "redis" | string;
 }
 
-type HeadersWithMap = Headers & {
-  map?: Record<string, string | string[]>;
-};
+interface SavedLoginCredentials {
+  username: string;
+  password: string;
+}
+
+const LOGIN_CREDENTIALS_STORAGE_KEY = "mytv_login_credentials";
 
 export class API {
   public baseURL: string = "";
@@ -120,21 +123,6 @@ export class API {
       })
       .filter(Boolean)
       .join("; ");
-  }
-
-  private getSetCookieHeader(response: Response): string | null {
-    const headerValue = response.headers.get("set-cookie") ?? response.headers.get("Set-Cookie");
-    if (headerValue) {
-      return headerValue;
-    }
-
-    const headerMap = (response.headers as HeadersWithMap).map;
-    const mappedValue = headerMap?.["set-cookie"];
-    if (Array.isArray(mappedValue)) {
-      return mappedValue.join(", ");
-    }
-
-    return mappedValue ?? null;
   }
 
   private getSetCookieHeaderFromRawHeaders(rawHeaders: string): string | null {
@@ -178,6 +166,119 @@ export class API {
     };
   }
 
+  private async getSavedLoginCredentials(): Promise<SavedLoginCredentials | null> {
+    try {
+      const rawValue = await AsyncStorage.getItem(LOGIN_CREDENTIALS_STORAGE_KEY);
+      if (!rawValue) {
+        return null;
+      }
+
+      const parsedValue = JSON.parse(rawValue) as Partial<SavedLoginCredentials>;
+      if (!parsedValue.password) {
+        return null;
+      }
+
+      return {
+        username: parsedValue.username ?? "",
+        password: parsedValue.password,
+      };
+    } catch {
+      return null;
+    }
+  }
+
+  private async tryReloginWithSavedCredentials(): Promise<boolean> {
+    const savedCredentials = await this.getSavedLoginCredentials();
+    if (!savedCredentials) {
+      return false;
+    }
+
+    try {
+      const loginResult = await this.login(savedCredentials.username, savedCredentials.password);
+      return !!loginResult.ok;
+    } catch {
+      return false;
+    }
+  }
+
+  private async blobRequestJson<T>(
+    path: string,
+    options: {
+      method?: "GET" | "POST" | "DELETE";
+      headers?: Record<string, string>;
+      body?: string;
+      signal?: AbortSignal;
+      retryOnUnauthorized?: boolean;
+    } = {}
+  ): Promise<T> {
+    if (!this.baseURL) {
+      throw new Error("API_URL_NOT_SET");
+    }
+
+    if (options.signal?.aborted) {
+      throw new Error("ABORTED");
+    }
+
+    let authCookies = await AsyncStorage.getItem("authCookies");
+    if (!authCookies) {
+      authCookies = await this.getNativeCookieHeader();
+      if (authCookies) {
+        await AsyncStorage.setItem("authCookies", authCookies);
+      }
+    }
+
+    const headers: Record<string, string> = {
+      "Cache-Control": "no-store",
+      ...(options.headers ?? {}),
+    };
+
+    if (authCookies && !headers.Cookie) {
+      await this.syncCookieHeaderToNative(authCookies);
+      headers.Cookie = authCookies;
+    }
+
+    const method = options.method ?? "GET";
+    const response = options.body === undefined
+      ? await ReactNativeBlobUtil.fetch(method, `${this.baseURL}${path}`, headers)
+      : await ReactNativeBlobUtil.fetch(method, `${this.baseURL}${path}`, headers, options.body);
+
+    if (options.signal?.aborted) {
+      throw new Error("ABORTED");
+    }
+
+    const responseInfo = response.info();
+    const setCookieHeader = this.getSetCookieHeaderFromHeaderObject(responseInfo.headers)
+      ?? this.getSetCookieHeaderFromRawHeaders(responseInfo.headers?.toString?.() ?? "");
+
+    if (setCookieHeader) {
+      await this.syncCookieHeaderToNative(setCookieHeader);
+      await AsyncStorage.setItem("authCookies", this.extractCookieHeader(setCookieHeader));
+    }
+
+    if (responseInfo.status === 401) {
+      await AsyncStorage.setItem("authCookies", "");
+      await this.clearNativeCookies();
+
+      if (options.retryOnUnauthorized !== false) {
+        const reloginSucceeded = await this.tryReloginWithSavedCredentials();
+        if (reloginSucceeded) {
+          return this.blobRequestJson<T>(path, {
+            ...options,
+            retryOnUnauthorized: false,
+          });
+        }
+      }
+
+      throw new Error("UNAUTHORIZED");
+    }
+
+    if (responseInfo.status < 200 || responseInfo.status >= 300) {
+      throw new Error(`HTTP error! status: ${responseInfo.status}`);
+    }
+
+    return JSON.parse(await response.text()) as T;
+  }
+
   private async getNativeCookieHeader(): Promise<string> {
     try {
       const nativeCookies = await CookieManager.get(this.baseURL);
@@ -217,50 +318,6 @@ export class API {
     this.baseURL = url;
   }
 
-  private async _fetch(url: string, options: RequestInit = {}): Promise<Response> {
-    if (!this.baseURL) {
-      throw new Error("API_URL_NOT_SET");
-    }
-
-    const headers = new Headers(options.headers ?? {});
-    let authCookies = await AsyncStorage.getItem("authCookies");
-    if (!authCookies) {
-      authCookies = await this.getNativeCookieHeader();
-      if (authCookies) {
-        await AsyncStorage.setItem("authCookies", authCookies);
-      }
-    }
-
-    if (authCookies && !headers.has("Cookie")) {
-      await this.syncCookieHeaderToNative(authCookies);
-      headers.set("Cookie", authCookies);
-    }
-
-    const response = await fetch(`${this.baseURL}${url}`, {
-      ...options,
-      headers,
-      credentials: "include",
-    });
-
-    const setCookieHeader = this.getSetCookieHeader(response);
-    if (setCookieHeader) {
-      await this.syncCookieHeaderToNative(setCookieHeader);
-      await AsyncStorage.setItem("authCookies", this.extractCookieHeader(setCookieHeader));
-    }
-
-    if (response.status === 401) {
-      await AsyncStorage.setItem("authCookies", "");
-      await this.clearNativeCookies();
-      throw new Error("UNAUTHORIZED");
-    }
-
-    if (!response.ok) {
-      throw new Error(`HTTP error! status: ${response.status}`);
-    }
-
-    return response;
-  }
-
   async login(username?: string | undefined, password?: string): Promise<{ ok: boolean }> {
     if (!this.baseURL) {
       throw new Error("API_URL_NOT_SET");
@@ -292,78 +349,68 @@ export class API {
   }
 
   async logout(): Promise<{ ok: boolean }> {
-    const response = await this._fetch("/api/logout", {
+    const result = await this.blobRequestJson<{ ok: boolean }>("/api/logout", {
       method: "POST",
     });
     await AsyncStorage.setItem("authCookies", '');
     await this.clearNativeCookies();
-    return response.json();
+    return result;
   }
 
   async getServerConfig(): Promise<ServerConfig> {
-    const response = await this._fetch("/api/server-config");
-    return response.json();
+    return this.blobRequestJson<ServerConfig>("/api/server-config");
   }
 
   async getFavorites(key?: string): Promise<Record<string, Favorite> | Favorite | null> {
     const url = key ? `/api/favorites?key=${encodeURIComponent(key)}` : "/api/favorites";
-    const response = await this._fetch(url);
-    return response.json();
+    return this.blobRequestJson<Record<string, Favorite> | Favorite | null>(url);
   }
 
   async addFavorite(key: string, favorite: Omit<Favorite, "save_time">): Promise<{ success: boolean }> {
-    const response = await this._fetch("/api/favorites", {
+    return this.blobRequestJson<{ success: boolean }>("/api/favorites", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ key, favorite }),
     });
-    return response.json();
   }
 
   async deleteFavorite(key?: string): Promise<{ success: boolean }> {
     const url = key ? `/api/favorites?key=${encodeURIComponent(key)}` : "/api/favorites";
-    const response = await this._fetch(url, { method: "DELETE" });
-    return response.json();
+    return this.blobRequestJson<{ success: boolean }>(url, { method: "DELETE" });
   }
 
   async getPlayRecords(): Promise<Record<string, PlayRecord>> {
-    const response = await this._fetch("/api/playrecords");
-    return response.json();
+    return this.blobRequestJson<Record<string, PlayRecord>>("/api/playrecords");
   }
 
   async savePlayRecord(key: string, record: Omit<PlayRecord, "save_time">): Promise<{ success: boolean }> {
-    const response = await this._fetch("/api/playrecords", {
+    return this.blobRequestJson<{ success: boolean }>("/api/playrecords", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ key, record }),
     });
-    return response.json();
   }
 
   async deletePlayRecord(key?: string): Promise<{ success: boolean }> {
     const url = key ? `/api/playrecords?key=${encodeURIComponent(key)}` : "/api/playrecords";
-    const response = await this._fetch(url, { method: "DELETE" });
-    return response.json();
+    return this.blobRequestJson<{ success: boolean }>(url, { method: "DELETE" });
   }
 
   async getSearchHistory(): Promise<string[]> {
-    const response = await this._fetch("/api/searchhistory");
-    return response.json();
+    return this.blobRequestJson<string[]>("/api/searchhistory");
   }
 
   async addSearchHistory(keyword: string): Promise<string[]> {
-    const response = await this._fetch("/api/searchhistory", {
+    return this.blobRequestJson<string[]>("/api/searchhistory", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ keyword }),
     });
-    return response.json();
   }
 
   async deleteSearchHistory(keyword?: string): Promise<{ success: boolean }> {
     const url = keyword ? `/api/searchhistory?keyword=${keyword}` : "/api/searchhistory";
-    const response = await this._fetch(url, { method: "DELETE" });
-    return response.json();
+    return this.blobRequestJson<{ success: boolean }>(url, { method: "DELETE" });
   }
 
   getImageProxyUrl(imageUrl: string): string {
@@ -377,8 +424,7 @@ export class API {
     pageStart: number = 0
   ): Promise<DoubanResponse> {
     const url = `/api/douban?type=${type}&tag=${encodeURIComponent(tag)}&pageSize=${pageSize}&pageStart=${pageStart}`;
-    const response = await this._fetch(url);
-    return response.json();
+    return this.blobRequestJson<DoubanResponse>(url);
   }
 
   async getDoubanCategoryData({
@@ -389,64 +435,16 @@ export class API {
     start = 0,
   }: DoubanCategoryParams): Promise<DoubanResponse> {
     const url = `/api/douban/categories?kind=${kind}&category=${encodeURIComponent(category)}&type=${encodeURIComponent(type)}&limit=${limit}&start=${start}`;
-    const response = await this._fetch(url);
-    return response.json();
+    return this.blobRequestJson<DoubanResponse>(url);
   }
 
   async searchVideos(query: string): Promise<{ results: SearchResult[] }> {
-    if (!this.baseURL) {
-      throw new Error("API_URL_NOT_SET");
-    }
-
-    let authCookies = await AsyncStorage.getItem("authCookies");
-    if (!authCookies) {
-      authCookies = await this.getNativeCookieHeader();
-      if (authCookies) {
-        await AsyncStorage.setItem("authCookies", authCookies);
-      }
-    }
-
-    const headers: Record<string, string> = {
-      "Cache-Control": "no-store",
-    };
-
-    if (authCookies) {
-      await this.syncCookieHeaderToNative(authCookies);
-      headers.Cookie = authCookies;
-    }
-
-    const response = await ReactNativeBlobUtil.fetch(
-      "GET",
-      `${this.baseURL}/api/search?q=${encodeURIComponent(query)}`,
-      headers
-    );
-
-    const responseInfo = response.info();
-    const setCookieHeader = this.getSetCookieHeaderFromHeaderObject(responseInfo.headers)
-      ?? this.getSetCookieHeaderFromRawHeaders(responseInfo.headers?.toString?.() ?? "");
-
-    if (setCookieHeader) {
-      await this.syncCookieHeaderToNative(setCookieHeader);
-      await AsyncStorage.setItem("authCookies", this.extractCookieHeader(setCookieHeader));
-    }
-
-    if (responseInfo.status === 401) {
-      await AsyncStorage.setItem("authCookies", "");
-      await this.clearNativeCookies();
-      throw new Error("UNAUTHORIZED");
-    }
-
-    if (responseInfo.status < 200 || responseInfo.status >= 300) {
-      throw new Error(`HTTP error! status: ${responseInfo.status}`);
-    }
-
-    return JSON.parse(await response.text()) as { results: SearchResult[] };
+    return this.blobRequestJson<{ results: SearchResult[] }>(`/api/search?q=${encodeURIComponent(query)}`);
   }
 
   async searchVideo(query: string, resourceId: string, signal?: AbortSignal): Promise<{ results: SearchResult[] }> {
     const url = `/api/search/one?q=${encodeURIComponent(query)}&resourceId=${encodeURIComponent(resourceId)}`;
-    const response = await this._fetch(url, { signal });
-    const { results } = await response.json();
+    const { results } = await this.blobRequestJson<{ results: SearchResult[] }>(url, { signal });
     const normalizedQuery = this.normalizeTitle(query);
     const exactMatches = results.filter((item: SearchResult) => this.normalizeTitle(item.title) === normalizedQuery);
 
@@ -464,16 +462,14 @@ export class API {
 
   async getResources(signal?: AbortSignal): Promise<ApiSite[]> {
     const url = `/api/search/resources`;
-    const response = await this._fetch(url, { signal });
-    return response.json();
+    return this.blobRequestJson<ApiSite[]>(url, { signal });
   }
 
   async getVideoDetail(source: string, id: string): Promise<VideoDetail> {
-    const url = `/api/detail?source=${source}&id=${id}`;
-    const response = await this._fetch(url);
-    return response.json();
+    const url = `/api/detail?source=${encodeURIComponent(source)}&id=${encodeURIComponent(id)}`;
+    return this.blobRequestJson<VideoDetail>(url);
   }
 }
 
 // 默认实例
-export let api = new API();
+export const api = new API();

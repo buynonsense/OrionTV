@@ -1,6 +1,7 @@
 import { create } from "zustand";
 import { type SearchResult, type VideoDetail, api } from "@/services/api";
 import { getResolutionFromM3U8 } from "@/services/m3u8";
+import useAuthStore from "@/stores/authStore";
 import { useSettingsStore } from "@/stores/settingsStore";
 import { FavoriteManager } from "@/services/storage";
 import Logger from "@/utils/Logger";
@@ -15,6 +16,22 @@ const isTitleMatch = (title: string, query: string): boolean => {
   const normalizedTitle = normalizeTitle(title);
   const normalizedQuery = normalizeTitle(query);
   return normalizedTitle === normalizedQuery || normalizedTitle.includes(normalizedQuery) || normalizedQuery.includes(normalizedTitle);
+};
+
+const isAbortLikeError = (error: unknown): boolean =>
+  error instanceof Error && (error.name === "AbortError" || error.message === "ABORTED");
+
+const getUserFacingErrorMessage = (error: unknown, fallbackMessage: string): string => {
+  if (error instanceof Error && error.message === "UNAUTHORIZED") {
+    useAuthStore.setState({ isLoggedIn: false, isLoginModalVisible: true });
+    return "认证失败，请重新登录";
+  }
+
+  if (error instanceof Error && error.message) {
+    return error.message;
+  }
+
+  return fallbackMessage;
 };
 
 const mapVideoDetailToSearchResult = (detail: VideoDetail): SearchResultWithResolution => ({
@@ -229,9 +246,13 @@ const useDetailStore = create<DetailState>((set, get) => ({
               });
             }
           } catch (fallbackError) {
+            if (signal.aborted || isAbortLikeError(fallbackError)) {
+              return;
+            }
+
             logger.error(`[ERROR] FALLBACK search FAILED:`, fallbackError);
             set({ 
-              error: `搜索失败：${fallbackError instanceof Error ? fallbackError.message : '网络错误，请稍后重试'}`,
+              error: `搜索失败：${getUserFacingErrorMessage(fallbackError, '网络错误，请稍后重试')}`,
               loading: false 
             });
           }
@@ -319,9 +340,13 @@ const useDetailStore = create<DetailState>((set, get) => ({
             logger.info(`[SUCCESS] Standard search completed, total results: ${totalResults}`);
           }
         } catch (resourceError) {
+          if (signal.aborted || isAbortLikeError(resourceError)) {
+            return;
+          }
+
           logger.error(`[ERROR] Failed to get resources:`, resourceError);
           set({ 
-            error: `获取视频源失败：${resourceError instanceof Error ? resourceError.message : '网络错误，请稍后重试'}`,
+            error: `获取视频源失败：${getUserFacingErrorMessage(resourceError, '网络错误，请稍后重试')}`,
             loading: false 
           });
           return;
@@ -357,9 +382,9 @@ const useDetailStore = create<DetailState>((set, get) => ({
       logger.info(`[PERF] Favorite check took ${(favoriteCheckEnd - favoriteCheckStart).toFixed(2)}ms`);
       
     } catch (e) {
-      if ((e as Error).name !== "AbortError") {
+      if (!isAbortLikeError(e)) {
         logger.error(`[ERROR] DetailStore.init caught unexpected error:`, e);
-        const errorMessage = e instanceof Error ? e.message : "获取数据失败";
+        const errorMessage = getUserFacingErrorMessage(e, "获取数据失败");
         set({ error: `搜索失败：${errorMessage}` });
       } else {
         logger.info(`[INFO] DetailStore.init aborted by user`);

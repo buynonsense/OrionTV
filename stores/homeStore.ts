@@ -140,10 +140,12 @@ const useHomeStore = create<HomeState>((set, get) => ({
 
   fetchInitialData: async () => {
     try {
-      const { apiBaseUrl } = useSettingsStore.getState();
-      await useAuthStore.getState().checkLoginStatus(apiBaseUrl);
-
       const { selectedCategory } = get();
+      if (selectedCategory.type === 'record') {
+        const { apiBaseUrl } = useSettingsStore.getState();
+        await useAuthStore.getState().checkLoginStatus(apiBaseUrl);
+      }
+
       const cacheKey = getCacheKey(selectedCategory);
 
       if (selectedCategory.type === 'record') {
