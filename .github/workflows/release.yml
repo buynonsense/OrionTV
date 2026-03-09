@@ -39,7 +39,9 @@ jobs:
 
       - name: Read app version
         id: package_version
-        run: echo "version=$(node -e \"process.stdout.write(require('./package.json').version)\")" >> "$GITHUB_OUTPUT"
+        run: |
+          VERSION=$(node -e "process.stdout.write(require('./package.json').version)")
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
 
       - name: Build Android release APK
         run: yarn build
@@ -76,7 +78,9 @@ jobs:
 
       - name: Read app version
         id: package_version
-        run: echo "version=$(node -e \"process.stdout.write(require('./package.json').version)\")" >> "$GITHUB_OUTPUT"
+        run: |
+          VERSION=$(node -e "process.stdout.write(require('./package.json').version)")
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
 
       - name: Prebuild iOS project
         run: yarn prebuild-mobile --platform ios
@@ -145,7 +149,8 @@ jobs:
           if [[ "${GITHUB_REF}" == refs/tags/* ]]; then
             TAG_NAME="${GITHUB_REF#refs/tags/}"
           else
-            TAG_NAME="v$(node -e \"process.stdout.write(require('./package.json').version)\")"
+            VERSION=$(node -e "process.stdout.write(require('./package.json').version)")
+            TAG_NAME="v${VERSION}"
           fi
           VERSION="${TAG_NAME#v}"
           echo "tag_name=${TAG_NAME}" >> "$GITHUB_OUTPUT"
