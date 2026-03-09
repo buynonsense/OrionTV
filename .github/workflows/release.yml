@@ -2,6 +2,9 @@ name: Build Release Assets
 
 on:
   push:
+    branches:
+      - main
+      - master
     tags:
       - "v*"
   workflow_dispatch:
@@ -10,7 +13,7 @@ permissions:
   contents: write
 
 concurrency:
-  group: release-${{ github.ref }}
+  group: release-${{ github.ref_name }}
   cancel-in-progress: false
 
 jobs:
@@ -148,23 +151,55 @@ jobs:
         run: |
           if [[ "${GITHUB_REF}" == refs/tags/* ]]; then
             TAG_NAME="${GITHUB_REF#refs/tags/}"
+            RELEASE_NAME="Release ${TAG_NAME}"
+            PRERELEASE="false"
+            MAKE_LATEST="true"
           else
             VERSION=$(node -e "process.stdout.write(require('./package.json').version)")
-            TAG_NAME="v${VERSION}"
+            SHORT_SHA="${GITHUB_SHA::7}"
+            BRANCH_NAME="${GITHUB_REF_NAME}"
+            TAG_NAME="pre-v${VERSION}-${BRANCH_NAME}-${SHORT_SHA}"
+            RELEASE_NAME="Prerelease v${VERSION} (${BRANCH_NAME} ${SHORT_SHA})"
+            PRERELEASE="true"
+            MAKE_LATEST="false"
           fi
           VERSION="${TAG_NAME#v}"
           echo "tag_name=${TAG_NAME}" >> "$GITHUB_OUTPUT"
           echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "release_name=${RELEASE_NAME}" >> "$GITHUB_OUTPUT"
+          echo "prerelease=${PRERELEASE}" >> "$GITHUB_OUTPUT"
+          echo "make_latest=${MAKE_LATEST}" >> "$GITHUB_OUTPUT"
+
+      - name: Prepare release notes
+        run: |
+          cat <<EOF > release-notes.md
+          ## Assets
+
+          - \\`OrionTV-${{ steps.release_meta.outputs.version }}-android.apk\\`: Android release APK
+          - \\`OrionTV-${{ steps.release_meta.outputs.version }}-android.apk.sha256\\`: Android APK SHA-256 checksum
+          - \\`OrionTV-${{ steps.release_meta.outputs.version }}-ios-unsigned.ipa\\`: Unsigned iOS IPA for advanced sideload workflows such as TrollStore
+          - \\`OrionTV-${{ steps.release_meta.outputs.version }}-ios-unsigned.ipa.sha256\\`: iOS IPA SHA-256 checksum
+          - \\`OrionTV-${{ steps.release_meta.outputs.version }}-ios-app.zip\\`: Raw iOS .app bundle archive
+          - \\`OrionTV-${{ steps.release_meta.outputs.version }}-ios-app.zip.sha256\\`: iOS .app archive SHA-256 checksum
+
+          ## Notes
+
+          - Android asset is ready for direct installation.
+          - iOS artifact is unsigned and is not an App Store/TestFlight package.
+          - For standard Apple distribution, add signing credentials and export a signed IPA in CI.
+          EOF
 
       - name: Create or update GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ steps.release_meta.outputs.tag_name }}
           target_commitish: ${{ github.sha }}
-          name: Release ${{ steps.release_meta.outputs.tag_name }}
+          name: ${{ steps.release_meta.outputs.release_name }}
           draft: false
-          prerelease: false
+          prerelease: ${{ steps.release_meta.outputs.prerelease }}
+          make_latest: ${{ steps.release_meta.outputs.make_latest }}
           generate_release_notes: true
+          body_path: release-notes.md
           files: release-assets/*
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
